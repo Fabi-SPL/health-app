@@ -2797,18 +2797,21 @@ class SupabaseClient {
         try await ensureAuth()
         guard let token = accessToken else { return }
 
-        let urlStr = "\(baseURL)/rest/v1/nudges?id=eq.\(id)"
+        // v165 — an RPC, not a PATCH. PATCHing "metadata" REPLACED the whole jsonb
+        // and destroyed `kind` and `session_id`: hangry_guardrail_check dedups on
+        // metadata->>'kind', so the same nudge re-fired 4x in one day, and
+        // NotificationListener lost the kind='smart_wake' buzzer escalation.
+        let urlStr = "\(baseURL)/rest/v1/rpc/mark_nudge_delivered"
         guard let url = URL(string: urlStr) else { return }
         var request = URLRequest(url: url)
-        request.httpMethod = "PATCH"
+        request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
 
-        // Store an ios_delivered_at in metadata (doesn't overwrite delivered_at).
         let body: [String: Any] = [
-            "metadata": ["ios_delivered_at": ISO8601DateFormatter().string(from: Date())]
+            "p_nudge_id": id,
+            "p_delivered_at": ISO8601DateFormatter().string(from: Date())
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
