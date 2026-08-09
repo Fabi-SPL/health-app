@@ -513,10 +513,14 @@ extension HealthEngine {
         }
     }
 
-    // MARK: - Poincaré SD1/SD2 (Finding 1.1 — Autonomic Balance)
-    // SD1 = short-term parasympathetic (beat-to-beat), correlates with RMSSD
-    // SD2 = long-term sympathovagal balance
-    // SD2/SD1 ratio: high = sympathetic dominant, low = parasympathetic dominant
+    // MARK: - Poincaré SD1/SD2
+    // Wrist-PPG validation triage (2026-08-09): SD2 is trustworthy (7.5%
+    // relative error vs ECG). SD1 is NOT — 34.3% relative error at consumer
+    // PPG beat-timing resolution; it needs ~20ms beat precision to mean
+    // anything. Keep computing both for continuity, but nothing may surface
+    // SD1 or the SD2/SD1 "sympathovagal balance" ratio as a user-facing claim.
+    // (Same family as LF/HF, which is confounded by respiration rate and is
+    // deliberately not computed here at all.)
 
     func computePoincaré() {
         let window = Array(rrBuffer.suffix(rmssdWindowSize))
