@@ -81,6 +81,12 @@ class HealthEngine: ObservableObject {
     @Published var baselineRHR: Double = 60.0
     @Published var baselineHRV: Double = 60.0
 
+    // His own 30-night sleep-duration baseline, from sleep_duration_baseline().
+    // Deviation from this is the only within-person validated predictor of
+    // next-day cognition; absolute hour cutoffs are a between-person construct.
+    @Published var sleepHoursBaseline: Double = 0
+    @Published var sleepHoursSD: Double = 0
+
     // Battery prediction
     @Published var estimatedChargeTime: String = ""
 
@@ -497,9 +503,18 @@ class HealthEngine: ObservableObject {
         Task {
             async let baselineResult = supabase.fetchHealthBaseline()
             async let scoresResult = supabase.fetchLastScores()
+            async let sleepBaseResult = supabase.fetchSleepDurationBaseline()
 
             let baseline = await baselineResult
             let scores = await scoresResult
+
+            if let sb = await sleepBaseResult {
+                await MainActor.run {
+                    self.sleepHoursBaseline = sb.mean
+                    self.sleepHoursSD = sb.sd
+                    print("[Health] Sleep baseline: \(String(format: "%.2f", sb.mean))h ± \(String(format: "%.2f", sb.sd)) over \(sb.nights) nights")
+                }
+            }
 
             if let rhr = baseline["rhr"], let hrv = baseline["hrv"], rhr > 0 {
                 DispatchQueue.main.async {

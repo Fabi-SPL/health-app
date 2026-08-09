@@ -3478,6 +3478,34 @@ extension SupabaseClient {
         return []
     }
 
+    /// v166 — his own 30-night sleep-duration mean and SD, excluding nights the
+    /// auto-excluder already flagged as broken. Returns nil when there are too
+    /// few clean nights to mean anything; the caller must then not score
+    /// deviation at all rather than invent a baseline.
+    func fetchSleepDurationBaseline(days: Int = 30) async -> (mean: Double, sd: Double, nights: Int)? {
+        do {
+            let rows = try await rpcRows("sleep_duration_baseline", ["p_days": days])
+            guard let row = rows.first else { return nil }
+
+            // numeric comes back as a JSON number or a string depending on the
+            // PostgREST build, so accept both rather than silently reading zero.
+            func num(_ key: String) -> Double {
+                if let d = row[key] as? Double { return d }
+                if let i = row[key] as? Int { return Double(i) }
+                if let s = row[key] as? String { return Double(s) ?? 0 }
+                return 0
+            }
+
+            let nights = Int(num("n_nights"))
+            let mean = num("mean_hours")
+            guard nights >= 14, mean > 0 else { return nil }
+            return (mean, num("sd_hours"), nights)
+        } catch {
+            log("sleep_duration_baseline failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     // MARK: - Pot (v159) — weigh once at the stove, then eat fractions
 
     /// One canonical row per thing Fabi actually eats. Server-side, hardcoded,

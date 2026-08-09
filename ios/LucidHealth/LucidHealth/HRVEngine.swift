@@ -239,29 +239,50 @@ extension HealthEngine {
             readiness = .red
         }
 
-        // --- Cognitive Capacity v2 (0-100 composite) ---
+        // --- Cognitive Capacity v3 (0-100 composite) ---
+        //
+        // Reweighted against what is actually validated WITHIN a person, not
+        // across people. The HRV-to-executive-function literature is trait-level:
+        // people with habitually higher vagal tone test better. No study found
+        // shows one person's daily HRV swing predicts that person's own daily
+        // executive function. Treating it as if it does is the ergodic fallacy,
+        // and it used to be 60% of this score.
+        //
+        // Sleep duration measured as a deviation from his OWN average is the one
+        // predictor with within-person validation (+0.11 processing-speed units
+        // per extra hour, 95% CI 0.06-0.15, 21-day ILD, N=326, Oxford Sleep
+        // 2026), with the between-person effect null. So it leads now.
+        //
+        // Sleep efficiency was flatly null in the same study (0.00, CI -0.01 to
+        // 0.01) and no longer enters the score at all. Stage minutes never did,
+        // which turns out to be correct: nothing links deep/REM minutes to
+        // next-day cognition within-person either.
 
-        // 1. LnRMSSD component (30%): z-score mapped to 0-100
+        // 1. Sleep-duration deviation from his own baseline (45%)
+        let sleepComp: Double
+        if sleepHoursBaseline > 0, sleepHoursSD > 0.1, sleepDurationHours > 0 {
+            let sleepZ = (sleepDurationHours - sleepHoursBaseline) / sleepHoursSD
+            sleepComp = max(0, min(100, 50 + sleepZ * 25))
+        } else {
+            // No usable personal baseline yet. Stay neutral rather than fall back
+            // to absolute cutoffs — "7 hours is good" is a between-person claim
+            // and carries no signal about his own day.
+            sleepComp = 50
+        }
+
+        // 2. LnRMSSD component (25%): kept as an untested hypothesis, not a fact.
+        // Whether this predicts HIS executive function is the open question the
+        // n=1 experiment harness exists to answer.
         let rmssdScore = max(0, min(100, 50 + deviation * 25))
 
-        // 2. SDNN component (30%): ratio to baseline, capped at 150%
+        // 3. SDNN component (15%): same trait-level caveat as RMSSD, so demoted
+        // with it rather than carried at equal weight.
         let baselineSDNN = sdnnHistory.isEmpty ? baselineHRV : (sdnnHistory.reduce(0, +) / Double(sdnnHistory.count))
         let sdnnRatio = baselineSDNN > 0 ? min(sdnn / baselineSDNN, 1.5) : 1.0
         let sdnnScore = min(sdnnRatio * 100, 100) * (sdnn > 0 ? 1.0 : 0.0)
 
-        // 3. Sleep quality component (25%)
-        let sleepComp: Double
-        if sleepDurationHours >= 7 {
-            sleepComp = min(90 + sleepEfficiency * 0.1, 100)
-        } else if sleepDurationHours >= 5.5 {
-            sleepComp = 50 + (sleepDurationHours - 5.5) / 1.5 * 40
-        } else if sleepDurationHours > 0 {
-            sleepComp = max(sleepDurationHours / 5.5 * 50, 10)
-        } else {
-            sleepComp = 50  // no data — neutral
-        }
-
-        // 4. DFA α1 component (15%): healthy resting ≈ 1.0
+        // 4. DFA α1 component (15%): healthy resting ≈ 1.0. Held at weight —
+        // this is an autonomic-fatigue marker, not a cognition claim.
         let dfaComp: Double
         if dfaAlpha1 > 0 {
             if dfaAlpha1 >= 0.9 && dfaAlpha1 <= 1.2 {
@@ -275,7 +296,7 @@ extension HealthEngine {
             dfaComp = 50  // no data — neutral
         }
 
-        let capacity = rmssdScore * 0.30 + sdnnScore * 0.30 + sleepComp * 0.25 + dfaComp * 0.15
+        let capacity = sleepComp * 0.45 + rmssdScore * 0.25 + sdnnScore * 0.15 + dfaComp * 0.15
 
         DispatchQueue.main.async {
             self.cognitiveCapacity = round(capacity)
@@ -348,46 +369,56 @@ extension HealthEngine {
             interpolated[i] -= intercept + slope * Double(i)
         }
 
-        // Simple peak-frequency detection via autocorrelation
-        // Look for peaks in the respiratory band (0.15-0.4 Hz = 9-24 bpm)
-        let minLag = Int(sampleRate / 0.4)  // 0.4 Hz upper bound
-        let maxLag = Int(sampleRate / 0.15) // 0.15 Hz lower bound
+        // Spectral peak in the respiratory band, which is the method that
+        // benchmarked best of ten ECG-derived-respiration techniques (0.0 bpm
+        // bias): tachogram, even resample, band-limit, take the peak. Computed as
+        // a direct periodogram over the band rather than a full FFT — the band is
+        // only ~0.1-0.5 Hz wide, so this is a few dozen bins, and it avoids
+        // needing a power-of-two window.
+        let minFreq = 0.1
+        let maxFreq = 0.5
+        let freqStep = 0.005   // 0.3 bpm resolution
+        let m = interpolated.count
 
-        guard minLag >= 2, maxLag + 1 < interpolated.count else { return }
+        var bestFreq = 0.0
+        var bestPower = 0.0
+        var totalPower = 0.0
+        var bandPowers: [(freq: Double, power: Double)] = []
 
-        // One lag either side of the band too, so an interior peak can be told
-        // apart from a plain band maximum.
-        var acf = [Double](repeating: 0, count: maxLag + 2)
-        for lag in (minLag - 1)...(maxLag + 1) {
-            var corr: Double = 0
-            for i in 0..<(interpolated.count - lag) {
-                corr += interpolated[i] * interpolated[i + lag]
+        var f = minFreq
+        while f <= maxFreq {
+            var re = 0.0
+            var im = 0.0
+            for (i, v) in interpolated.enumerated() {
+                let phase = 2.0 * Double.pi * f * Double(i) / sampleRate
+                re += v * cos(phase)
+                im += v * sin(phase)
             }
-            acf[lag] = corr / Double(interpolated.count - lag)
+            let power = (re * re + im * im) / Double(m)
+            bandPowers.append((f, power))
+            totalPower += power
+            if power > bestPower {
+                bestPower = power
+                bestFreq = f
+            }
+            f += freqStep
         }
 
-        // A real respiratory oscillation produces a local maximum inside the
-        // band. Monotonic decay means there is no rhythm to report, so publish
-        // nothing rather than the band edge.
-        var bestLag = -1
-        var bestCorr: Double = 0
+        guard bestPower > 0, totalPower > 0, bandPowers.count > 2 else { return }
 
-        for lag in minLag...maxLag {
-            let c = acf[lag]
-            if c > acf[lag - 1] && c >= acf[lag + 1] && c > bestCorr {
-                bestCorr = c
-                bestLag = lag
-            }
-        }
+        // The peak has to actually stand out. A flat band means there is no
+        // respiratory rhythm resolvable in this window, and reporting the
+        // arg-max of noise is exactly how this ended up pinned at one value.
+        let meanPower = totalPower / Double(bandPowers.count)
+        let snr = bestPower / max(meanPower, 1e-9)
+        guard snr >= 2.5 else { return }
 
-        guard bestLag > 0 else { return }
+        // And it must be an interior peak, not the edge of the search band.
+        guard bestFreq > minFreq + freqStep, bestFreq < maxFreq - freqStep else { return }
 
-        // Convert lag to frequency to breaths per minute
-        let freq = sampleRate / Double(bestLag)
-        let bpm = freq * 60.0
+        let bpm = bestFreq * 60.0
 
-        // Quality gate: 8-25 bpm, and autocorrelation must be positive
-        if bpm >= 8 && bpm <= 25 && bestCorr > 0 {
+        if bpm >= 8 && bpm <= 25 {
             DispatchQueue.main.async {
                 self.respiratoryRate = bpm
             }
