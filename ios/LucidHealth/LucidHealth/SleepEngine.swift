@@ -507,8 +507,7 @@ extension HealthEngine {
             guard let self = self else { return }
             if let result = await self.debugSupabase?.recomputeHealthMetrics() {
                 await MainActor.run {
-                    self.recoveryScore = result.recovery
-                    self.sleepScore = result.sleepScore
+                    self.applyServerRecompute(result)
                 }
                 print("[ManualWake] Server recompute → recovery=\(Int(result.recovery)) sleepScore=\(Int(result.sleepScore)) sleepHours=\(result.sleepHours)")
             } else {

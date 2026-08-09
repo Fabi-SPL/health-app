@@ -474,6 +474,9 @@ class SupabaseClient {
                 // null/stale recovery the app then displayed as a stuck value.)
                 let formatter = DateFormatter()
                 formatter.dateFormat = "yyyy-MM-dd"
+                // The server anchors every metric_date to Berlin. Device-local
+                // would PATCH the wrong day while travelling or on a DST edge.
+                formatter.timeZone = TimeZone(identifier: "Europe/Berlin")
                 let today = formatter.string(from: Date())
 
                 let url = URL(string: "\(baseURL)/rest/v1/health_metrics?user_id=eq.\(userId)&metric_date=eq.\(today)")!
@@ -487,11 +490,14 @@ class SupabaseClient {
                 // Side-channel experimental metrics ONLY. NEVER write:
                 // recovery_score, sleep_score, sleep_hours, deep/rem/light/awake_min,
                 // sleep_start, sleep_end, sleep_efficiency_pct, hrv_avg, resting_hr,
-                // readiness_level, readiness_score, source — owned by pg_recompute.
+                // readiness_level, readiness_score, source, body_battery,
+                // skin_temp, alcohol_impact — owned by pg_recompute.
                 var body: [String: Any] = [:]
                 if strainScore > 0 { body["strain_score"] = round(strainScore * 10) / 10 }
                 if respiratoryRate > 0 { body["respiratory_rate"] = round(respiratoryRate * 10) / 10 }
-                if skinTemp > 0 && skinTemp < 45 { body["skin_temp"] = round(skinTemp * 10) / 10 }
+                // v152: skin_temp is server-owned via clean_skin_temp_day() (range
+                // gate + cross-day slew reject). The raw strap value written from
+                // here was overwriting the cleaned one.
                 if strainPhysical >= 0 { body["strain_physical"] = round(strainPhysical * 10) / 10 }
                 if strainStress >= 0 { body["strain_stress"] = round(strainStress * 10) / 10 }
                 if strainAutonomic >= 0 { body["strain_autonomic"] = round(strainAutonomic * 10) / 10 }
@@ -522,7 +528,9 @@ class SupabaseClient {
                 if sleepDebt > 0 { body["sleep_debt_hours"] = round(sleepDebt * 10) / 10 }
                 if vo2max > 0 { body["vo2max_estimate"] = round(vo2max * 10) / 10 }
                 if overtrainingRisk != "None" { body["overtraining_risk"] = overtrainingRisk }
-                if alcoholImpact > 0 { body["alcohol_impact"] = round(alcoholImpact * 10) / 10 }
+                // alcohol_impact is server-owned (audit #39 guard against clearing a
+                // real flag). The device wrote an RMSSD-depression percentage into a
+                // column the server treats as a 1.0 marker.
                 if hrr1 > 0 { body["hrr_1min"] = round(hrr1) }
                 if hrr2 > 0 { body["hrr_2min"] = round(hrr2) }
 
@@ -1573,10 +1581,12 @@ class SupabaseClient {
 
             let fmt = DateFormatter()
             fmt.dateFormat = "yyyy-MM-dd"
+            // Match the server, which anchors metric_date to Berlin.
+            fmt.timeZone = TimeZone(identifier: "Europe/Berlin")
             let today = fmt.string(from: Date())
 
             // Try today first, fall back to most recent
-            let todayURL = URL(string: "\(baseURL)/rest/v1/health_metrics?user_id=eq.\(userId)&metric_date=eq.\(today)&select=recovery_score,strain_score,sleep_hours,deep_sleep_min,rem_sleep_min,light_sleep_min,awake_min,body_battery,hrv_avg,resting_hr,respiratory_rate,cognitive_capacity_score,cognitive_label,illness_risk,training_monotony,training_strain,acwr,sleep_start,sleep_end,sdnn_avg,pnn50_avg,dfa_alpha1_avg,skin_temp,poincare_sd1,poincare_sd2,nocturnal_hr_dip,sleep_fragmentation,sleep_debt_hours,vo2max_estimate,alcohol_impact,readiness_score,strain_physical,strain_stress,strain_autonomic")!
+            let todayURL = URL(string: "\(baseURL)/rest/v1/health_metrics?user_id=eq.\(userId)&metric_date=eq.\(today)&select=recovery_score,strain_score,sleep_hours,sleep_score,sleep_efficiency_pct,deep_sleep_min,rem_sleep_min,light_sleep_min,awake_min,body_battery,hrv_avg,resting_hr,respiratory_rate,cognitive_capacity_score,cognitive_label,illness_risk,training_monotony,training_strain,acwr,sleep_start,sleep_end,sdnn_avg,pnn50_avg,dfa_alpha1_avg,skin_temp,poincare_sd1,poincare_sd2,nocturnal_hr_dip,sleep_fragmentation,sleep_debt_hours,vo2max_estimate,alcohol_impact,readiness_score,strain_physical,strain_stress,strain_autonomic")!
             var todayReq = URLRequest(url: todayURL)
             todayReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
             todayReq.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -1590,7 +1600,7 @@ class SupabaseClient {
             }
 
             // Fall back to most recent day with scores
-            let url = URL(string: "\(baseURL)/rest/v1/health_metrics?user_id=eq.\(userId)&hrv_avg=gt.0&order=metric_date.desc&limit=1&select=recovery_score,strain_score,sleep_hours,deep_sleep_min,rem_sleep_min,light_sleep_min,awake_min,body_battery,hrv_avg,resting_hr,respiratory_rate,cognitive_capacity_score,cognitive_label,illness_risk,training_monotony,training_strain,acwr,sleep_start,sleep_end,sdnn_avg,pnn50_avg,dfa_alpha1_avg,skin_temp,poincare_sd1,poincare_sd2,nocturnal_hr_dip,sleep_fragmentation,sleep_debt_hours,vo2max_estimate,alcohol_impact,readiness_score,strain_physical,strain_stress,strain_autonomic")!
+            let url = URL(string: "\(baseURL)/rest/v1/health_metrics?user_id=eq.\(userId)&hrv_avg=gt.0&order=metric_date.desc&limit=1&select=recovery_score,strain_score,sleep_hours,sleep_score,sleep_efficiency_pct,deep_sleep_min,rem_sleep_min,light_sleep_min,awake_min,body_battery,hrv_avg,resting_hr,respiratory_rate,cognitive_capacity_score,cognitive_label,illness_risk,training_monotony,training_strain,acwr,sleep_start,sleep_end,sdnn_avg,pnn50_avg,dfa_alpha1_avg,skin_temp,poincare_sd1,poincare_sd2,nocturnal_hr_dip,sleep_fragmentation,sleep_debt_hours,vo2max_estimate,alcohol_impact,readiness_score,strain_physical,strain_stress,strain_autonomic")!
             var request = URLRequest(url: url)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -1615,10 +1625,18 @@ class SupabaseClient {
 
     private func parseScoresRow(_ row: [String: Any], label: String) -> [String: Double] {
         var result: [String: Double] = [:]
+        // Marks the row as another day's, so the caller can use it for baselines
+        // without painting it on as today's scores.
+        if label == "fallback" { result["is_fallback"] = 1 }
         // Core scores
         if let r = row["recovery_score"] as? Double { result["recovery"] = r }
         if let s = row["strain_score"] as? Double { result["strain"] = s }
         if let h = row["sleep_hours"] as? Double { result["sleep_hours"] = h }
+        // The server's own sleep score and efficiency. Re-deriving these on device
+        // from sleep_hours produced a different number than the server's (65 -> 50,
+        // 83 -> 90) and printed the score in the efficiency slot.
+        if let ss = row["sleep_score"] as? Double { result["sleep_score"] = ss }
+        if let se = row["sleep_efficiency_pct"] as? Double { result["sleep_efficiency"] = se }
         if let d = row["deep_sleep_min"] as? Double { result["deep_min"] = d }
         if let r = row["rem_sleep_min"] as? Double { result["rem_min"] = r }
         if let l = row["light_sleep_min"] as? Double { result["light_min"] = l }

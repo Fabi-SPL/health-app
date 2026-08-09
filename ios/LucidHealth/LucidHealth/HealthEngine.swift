@@ -527,11 +527,23 @@ class HealthEngine: ObservableObject {
             // Server can never be more stale than local — local is computed from
             // the same data and pushed to server, so server >= local in freshness.
             DispatchQueue.main.async {
+                // fetchLastScores falls back to the most recent day with data when
+                // today's row does not exist yet. Those numbers belong to another
+                // day — they may seed baselines, but painting them on as today's
+                // scores is why Aug 2 and Aug 3 displayed Aug 1's recovery.
+                let isFallback = (scores["is_fallback"] ?? 0) == 1
+
+                // Restore any in-flight stage minutes BEFORE the server assignment
+                // below, never after. Running it afterwards let the on-device
+                // UserDefaults accumulator overwrite the server's stage split —
+                // the Jul-14 1.1h clobber, which had regressed into this path.
+                self.restoreStageMinutesIfNeeded()
+
                 // v106 fix: was `r > 0` — but 0 is a valid recovery score (alcohol
                 // night, total burnout etc.). NULL is the "no data" case, and `if let`
                 // already rejects nil. Treating 0 as no-data made the app show
                 // yesterday's 75 on the May 23 drunk night when server had 0.
-                if let r = scores["recovery"], r >= 0 {
+                if let r = scores["recovery"], r >= 0, !isFallback {
                     self.recoveryScore = round(r)
                     if r >= 67 { self.recoveryLabel = "Green" }
                     else if r >= 34 { self.recoveryLabel = "Yellow" }
@@ -541,20 +553,31 @@ class HealthEngine: ObservableObject {
                 }
                 // v106: alcohol-night flag from server (gives context to a low score)
                 self.alcoholImpact = scores["alcohol_impact"] ?? 0
-                if let hours = scores["sleep_hours"], hours > 0 {
-                    let durationScore: Double = hours >= 7 ? 90 : hours >= 6 ? 70 : hours >= 5 ? 50 : 30
-                    self.sleepScore = round(durationScore)
+                if let hours = scores["sleep_hours"], hours > 0, !isFallback {
+                    // Prefer the server's own sleep_score. The local bucket ladder
+                    // disagreed with it (server 65 showed as 50, 83 showed as 90),
+                    // and that number feeds the lock-screen widget and DayState.
+                    if let ss = scores["sleep_score"], ss > 0 {
+                        self.sleepScore = round(ss)
+                    } else {
+                        self.sleepScore = round(hours >= 7 ? 90 : hours >= 6 ? 70 : hours >= 5 ? 50 : 30)
+                    }
                     self.sleepDurationHours = round(hours * 10) / 10
+                    if let eff = scores["sleep_efficiency"], eff > 0 { self.sleepEfficiency = eff }
                     if let deep = scores["deep_min"], deep > 0 { self.stageMinutes[.deep] = deep }
                     if let rem = scores["rem_min"], rem > 0 { self.stageMinutes[.rem] = rem }
                     if let light = scores["light_min"], light > 0 { self.stageMinutes[.light] = light }
-                    print("[Health] Restored sleep from server: \(String(format: "%.1f", hours))h (D:\(Int(scores["deep_min"] ?? 0))m R:\(Int(scores["rem_min"] ?? 0))m L:\(Int(scores["light_min"] ?? 0))m)")
+                    // awake_min was fetched and parsed but never assigned, so the
+                    // stage bar normalised over a total that excluded it and
+                    // inflated every stage percentage.
+                    if let awake = scores["awake_min"], awake > 0 { self.stageMinutes[.awake] = awake }
+                    print("[Health] Restored sleep from server: \(String(format: "%.1f", hours))h (D:\(Int(scores["deep_min"] ?? 0))m R:\(Int(scores["rem_min"] ?? 0))m L:\(Int(scores["light_min"] ?? 0))m A:\(Int(scores["awake_min"] ?? 0))m)")
                 }
-                if let s = scores["strain"], s > 0 {
+                if let s = scores["strain"], s > 0, !isFallback {
                     self.strainScore = round(s * 10) / 10
                     print("[Health] Restored strain from server: \(String(format: "%.1f", s))")
                 }
-                if let b = scores["body_battery"], b > 0 {
+                if let b = scores["body_battery"], b > 0, !isFallback {
                     self.bodyBattery = b
                     print("[Health] Restored body battery from server: \(Int(b))%")
                 }
@@ -649,8 +672,8 @@ class HealthEngine: ObservableObject {
                     self.lastAlcoholImpact = alc
                 }
 
-                // Restore in-flight sleep stage minutes from UserDefaults (survives force-quit)
-                self.restoreStageMinutesIfNeeded()
+                // (restoreStageMinutesIfNeeded now runs at the top of this block,
+                // before the server's stage split is applied.)
                 // Restore overtraining streak (UserDefaults, date-gated to 2 days)
                 self.restoreConsecutiveLowHRVDays()
 
@@ -1036,6 +1059,28 @@ class HealthEngine: ObservableObject {
                 print("[Health] Calibration complete: \(newCal.dataPoints) days, sleepThr=\(Int(newCal.sleepThreshold)) wakeThr=\(Int(newCal.wakeThreshold)) deepCeil=\(Int(newCal.deepHRCeiling))")
             }
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // MARK: - Server Recompute Result
+    // ═══════════════════════════════════════════════════════════════
+
+    /// The one place a recompute_health_metrics() result is applied. Call on the
+    /// main queue. Every call site used to wire recovery and sleepScore up by
+    /// hand and drop sleepHours on the floor, which is how the sleep card stayed
+    /// frozen at a stale value after a correct server recompute.
+    func applyServerRecompute(_ result: (recovery: Double, sleepScore: Double, sleepHours: Double)) {
+        // 0 is a valid recovery score (alcohol night, burnout). Only nil is no-data,
+        // and the caller's `if let` has already handled that.
+        if result.recovery >= 0 {
+            recoveryScore = round(result.recovery)
+            if result.recovery >= 67 { recoveryLabel = "Green" }
+            else if result.recovery >= 34 { recoveryLabel = "Yellow" }
+            else { recoveryLabel = "Red" }
+            UserDefaults.standard.set(result.recovery, forKey: recoveryScoreTodayKey)
+        }
+        if result.sleepScore > 0 { sleepScore = round(result.sleepScore) }
+        if result.sleepHours > 0 { sleepDurationHours = round(result.sleepHours * 10) / 10 }
     }
 
     // ═══════════════════════════════════════════════════════════════

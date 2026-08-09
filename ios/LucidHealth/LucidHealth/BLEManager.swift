@@ -256,7 +256,7 @@ class BLEManager: NSObject, ObservableObject {
     private var historyBuffer: [HRReading] = []
     private var historyBatchCount = 0
     private var historyRawCaptureCount = 0  // v113 — bounds raw-hex logging of history packets per sync
-    private var historySyncTimer: Timer?
+    private var historySyncTimer: DispatchSourceTimer?  // background-safe (was Timer on main runloop — frozen while suspended)
     private let lastSyncKey = "lucid_last_sync_timestamp"
 
     // MARK: - Strap Clock Offset (used for getClock response display)
@@ -496,10 +496,9 @@ class BLEManager: NSObject, ObservableObject {
                 guard let self = self else { return }
                 if let result = await self.supabase.recomputeHealthMetrics() {
                     await MainActor.run {
-                        self.healthEngine.recoveryScore = result.recovery
-                        self.healthEngine.sleepScore = result.sleepScore
+                        self.healthEngine.applyServerRecompute(result)
                     }
-                    self.log("[AutoWake] Server recompute → recovery=\(Int(result.recovery)) sleepScore=\(Int(result.sleepScore))")
+                    self.log("[AutoWake] Server recompute → recovery=\(Int(result.recovery)) sleepScore=\(Int(result.sleepScore)) sleepHours=\(String(format: "%.1f", result.sleepHours))")
                 } else {
                     self.log("[AutoWake] Server recompute failed — keeping local in-memory values")
                 }
@@ -1450,14 +1449,7 @@ class BLEManager: NSObject, ObservableObject {
                 self.gapEndTime = self.manualBackfillWindowEnd
 
                 // 120s timeout — if strap is silent, finish gracefully
-                DispatchQueue.main.async {
-                    self.historySyncTimer?.invalidate()
-                    self.historySyncTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in
-                        guard let self, self.isDownloadingHistory else { return }
-                        self.log("manualBackfill: 120s timeout — strap returned \(self.historyBuffer.count) records")
-                        self.finishHistoryDownload()
-                    }
-                }
+                self.armHistorySyncTimeout(trigger: "manual-72h")
 
                 // v113 — preamble-ordered request (CMD 7→35→10→22) replaces the bare
                 // CMD 22 that raced the hello handshake on firmware 41.x.
@@ -1516,8 +1508,11 @@ class BLEManager: NSObject, ObservableObject {
         // isManualBackfillMode is false here so the finalizer treats it as auto.)
         Task { [weak self] in
             guard let self else { return }
+            // Must cover the same depth the finalizer now accepts (96h), not just
+            // the gap window. A dedup set narrower than the accept window would let
+            // already-stored minutes re-upload as duplicates.
             let existing = await self.supabase.fetchMinutesWithData(
-                since: self.gapStartTime,
+                since: Date().addingTimeInterval(-96 * 3600),
                 until: self.gapEndTime
             )
             self.manualBackfillExistingMinutes = existing
@@ -1528,15 +1523,7 @@ class BLEManager: NSObject, ObservableObject {
             self.supabase.pushDebugLog(key: "history_sync_request_sent", value: "trigger=auto-reconnect gap_min=\(gapMinutes) start=\(self.gapStartTime.timeIntervalSince1970) end=\(self.gapEndTime.timeIntervalSince1970)")
 
             // Timeout watchdog — set up here so it doesn't fire before we even sent
-            DispatchQueue.main.async {
-                self.historySyncTimer?.invalidate()
-                self.historySyncTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in
-                    guard let self, self.isDownloadingHistory else { return }
-                    self.log("History download TIMEOUT after 120s — \(self.historyBuffer.count) records received")
-                    self.supabase.pushDebugLog(key: "history_sync_timeout", value: "trigger=auto-reconnect records_buffered=\(self.historyBuffer.count) batches=\(self.historyBatchCount)")
-                    self.finishHistoryDownload()
-                }
-            }
+            self.armHistorySyncTimeout(trigger: "auto-reconnect")
 
             self.bleQueue.async {
                 guard let p = self.peripheral, let c = self.cmdToStrap else {
@@ -1551,6 +1538,27 @@ class BLEManager: NSObject, ObservableObject {
                 self.sendHistoryRequestWithPreamble(p, c, trigger: "auto-reconnect")
             }
         }
+    }
+
+    /// One-shot 120s history watchdog, on bleQueue rather than the main runloop.
+    /// A main-runloop Timer is frozen while the app is suspended, so a background
+    /// sync that stalled never finalized — and since startRealtimeStreaming() is
+    /// only reached from the finalizer, live HR was lost for the whole connection.
+    private func armHistorySyncTimeout(trigger: String) {
+        historySyncTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: bleQueue)
+        timer.schedule(deadline: .now() + 120)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.isDownloadingHistory else { return }
+            self.log("History download TIMEOUT after 120s [\(trigger)] — \(self.historyBuffer.count) records received")
+            self.supabase.pushDebugLog(
+                key: "history_sync_timeout",
+                value: "trigger=\(trigger) records_buffered=\(self.historyBuffer.count) batches=\(self.historyBatchCount)"
+            )
+            self.finishHistoryDownload()
+        }
+        historySyncTimer = timer
+        timer.resume()
     }
 
     /// Finish history download: dedup against existing minute-buckets, upload
@@ -1591,8 +1599,16 @@ class BLEManager: NSObject, ObservableObject {
             guard let self else { return }
 
             let nowUnix = Int(Date().timeIntervalSince1970)
-            let minUnix = Int(windowStart.timeIntervalSince1970)
-            let maxUnix = Int(windowEnd.timeIntervalSince1970)
+            // The accept window is the strap's whole ring depth, NOT the gap window.
+            // The strap serves from its oldest unacked record (~72h back) while the
+            // gap window is usually only minutes wide, so matching the two rejected
+            // 100% of records by construction — 756 syncs since 2026-05-07 produced
+            // 5 uploads. gapStartTime still decides WHETHER to sync; it must never
+            // filter records. Novelty is the dedup set's job, and that is idempotent.
+            let acceptDepth: TimeInterval = 96 * 3600
+            let minUnix = Int(Date().addingTimeInterval(-acceptDepth).timeIntervalSince1970)
+            let maxUnix = nowUnix + 60
+            let gapDesc = "gap=[\(Int(windowStart.timeIntervalSince1970))..\(Int(windowEnd.timeIntervalSince1970))]"
 
             var dedupedRecords: [(timestamp: Date, hr: UInt8, rrIntervals: [UInt16], hrv: Double)] = []
             var sleepReplayPairs: [(hr: Int, time: Date)] = []
@@ -1600,6 +1616,7 @@ class BLEManager: NSObject, ObservableObject {
             var skippedOutOfRange = 0
             var skippedZeroHR = 0
             var oorNewestTs = 0   // v137: newest out-of-range ts — if even this is ancient, the cursor is stuck
+            var oorMaxHR = 0      // highest HR among rejected records — a real pulse here means the buffer is NOT dead
             // v104 diagnostic: capture the first N out-of-range timestamps so
             // we can see what the strap is actually returning. The May 21
             // manual-72h push returned 9 records, all out-of-range, with no
@@ -1611,8 +1628,9 @@ class BLEManager: NSObject, ObservableObject {
 
             for r in recordsFromStrap {
                 let ts = Int(r.timestamp)
-                guard ts >= minUnix && ts <= maxUnix && ts <= nowUnix + 60 else {
+                guard ts >= minUnix && ts <= maxUnix else {
                     if ts > 0 && ts < 4_102_444_800 && ts > oorNewestTs { oorNewestTs = ts }
+                    if Int(r.heartRate) > oorMaxHR { oorMaxHR = Int(r.heartRate) }
                     if oorSamples.count < oorSampleCap {
                         // hr=NN ts=UNIX (ISO) — compact, parseable in bridge_logs
                         let isoStr: String = {
@@ -1627,7 +1645,12 @@ class BLEManager: NSObject, ObservableObject {
                     skippedOutOfRange += 1
                     continue
                 }
-                guard r.heartRate > 0 else {
+                // Type-47 arrives in two layouts. The 93-byte cmd=5 variant carries a
+                // real HR at byte 14; the 73-byte cmd=0 variant does not, and byte 14
+                // there reads 1-7. `heartRate > 0` admitted both, which is why 690 of
+                // 785 backfilled rows landed with HR under 20. Only a physiological
+                // pulse gets through now.
+                guard r.heartRate >= 25 && r.heartRate <= 220 else {
                     skippedZeroHR += 1
                     continue
                 }
@@ -1655,10 +1678,10 @@ class BLEManager: NSObject, ObservableObject {
             // v104 diagnostic: dump out-of-range samples + window so we can
             // diagnose the empty/garbage buffer mystery (May 21 manual backfill).
             if !oorSamples.isEmpty {
-                let windowDesc = "window=[\(minUnix)..\(maxUnix)] now=\(nowUnix)"
+                let windowDesc = "accept=[\(minUnix)..\(maxUnix)] \(gapDesc) now=\(nowUnix)"
                 self.supabase.pushDebugLog(
                     key: "history_sync_oor_samples",
-                    value: "trigger=\(trigger) \(windowDesc) count=\(skippedOutOfRange) samples=[\(oorSamples.joined(separator: " | "))]"
+                    value: "trigger=\(trigger) \(windowDesc) count=\(skippedOutOfRange) oor_max_hr=\(oorMaxHR) samples=[\(oorSamples.joined(separator: " | "))]"
                 )
             }
 
@@ -1671,11 +1694,17 @@ class BLEManager: NSObject, ObservableObject {
             // requested window (i.e. the strap is serving ancient data, not "no data")
             // — and fire ERASE 0x19 automatically so the next sync drains clean.
             // Auto-reconnect only + 6h cooldown so a wedged strap can never loop-erase.
+            // v171 — hard safety condition added: oorMaxHR < 25. This erase fired on
+            // 2026-07-31 13:04 against a buffer holding real HR 92-96 from Jul 28 and
+            // destroyed it, because the old narrow accept window made
+            // skippedOutOfRange >= 100 permanently true. A real pulse among the
+            // rejected records means the buffer is live, not wedged — never erase it.
             if trigger == "auto-reconnect",
                recordsFromStrap.count >= 100,
                dedupedRecords.isEmpty,
                skippedAlreadyCovered == 0,
                skippedOutOfRange >= 100,
+               oorMaxHR < 25,
                oorNewestTs > 0,
                oorNewestTs < minUnix - 86_400 {
                 let sinceLastErase = Date().timeIntervalSince(self.lastAutoHistoryErase)
@@ -1717,7 +1746,9 @@ class BLEManager: NSObject, ObservableObject {
                     self.isManualBackfillMode = false
                 }
                 self.manualBackfillExistingMinutes = []
-                self.saveLastSyncTimestamp()
+                // Do NOT advance the cursor here — nothing was uploaded. Saving it on
+                // a zero-upload sync walked the offline fail-safe forward past data
+                // that had never landed, so the gap became invisible.
                 return
             }
 
@@ -1748,7 +1779,8 @@ class BLEManager: NSObject, ObservableObject {
                 self.isManualBackfillMode = false
             }
             self.manualBackfillExistingMinutes = []
-            self.saveLastSyncTimestamp()
+            // Only advance the cursor once rows have actually landed.
+            if result.uploaded > 0 { self.saveLastSyncTimestamp() }
         }
     }
 
@@ -1838,7 +1870,7 @@ class BLEManager: NSObject, ObservableObject {
 
         case 3: // META_HISTORY_COMPLETE — all done!
             log("HISTORY COMPLETE! \(historyBuffer.count) total records across \(historyBatchCount) batches")
-            DispatchQueue.main.async { self.historySyncTimer?.invalidate() }
+            historySyncTimer?.cancel(); historySyncTimer = nil
 
             DispatchQueue.main.async {
                 self.historySyncProgress = "Processing \(self.historyBuffer.count) records..."
@@ -2344,8 +2376,25 @@ extension BLEManager: CBCentralManagerDelegate {
         // flag stays stuck = true forever. That would silently block all
         // skin-temp decoding (type-49 falls into the metadata branch).
         // Reset here so the next reconnect starts clean.
+        let wasDownloading = isDownloadingHistory
+        let bufferedAtDisconnect = historyBuffer.count
         isDownloadingHistory = false
         DispatchQueue.main.async { self.isHistorySyncing = false }
+
+        // The auto path used to drop historyBuffer here with no log at all. At
+        // 60-80 disconnects a day that silently discarded most interrupted syncs.
+        // Salvage whatever arrived and always leave a trace. (Manual keeps its own
+        // "failed" UI path below — running the finalizer would race it.)
+        if wasDownloading && !isManualBackfillMode {
+            supabase.pushDebugLog(
+                key: "history_sync_aborted_disconnect",
+                value: "trigger=auto-reconnect records_buffered=\(bufferedAtDisconnect)"
+            )
+            historySyncTimer?.cancel(); historySyncTimer = nil
+            if bufferedAtDisconnect > 0 {
+                finishHistoryWithDedup(trigger: "auto-reconnect")
+            }
+        }
 
         // Manual backfill cleanup: if user disconnected mid-flight, the UI
         // would be stuck on "running" forever. Surface as failed so the
@@ -2371,7 +2420,10 @@ extension BLEManager: CBCentralManagerDelegate {
         stopWatchdog()
         flushReadingsOnQueue()  // v141 — on bleQueue here; flush synchronously so the
                                 // final batch is pushed before iOS can kill the app
-        saveLastSyncTimestamp()  // Save exact disconnect time so gap sync is precise
+        // Save the exact disconnect time so gap sync is precise — but only when
+        // data actually landed. Advancing the cursor after a session that produced
+        // nothing walked the offline fail-safe past a gap that was never filled.
+        if readingsToday > 0 { saveLastSyncTimestamp() }
 
         // Persist today's daily summary on disconnect — if the strap never reconnects
         // before midnight, this write preserves the day's data. Uses the offline queue

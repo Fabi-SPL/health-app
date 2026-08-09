@@ -139,10 +139,15 @@ struct TodayView: View {
     /// One refresh path for pull-to-refresh, foreground, and first load —
     /// recovery + sleep recompute, body-battery anchor + 24h curve.
     private func refreshBodyMetrics() async {
-        if let result = await bleManager.supabase.recomputeHealthMetrics() {
+        // Never recompute mid-sleep. detect_sleep_window scores
+        // (target_date - 1) 19:00 → target_date 12:00, so a 03:00 call measures a
+        // half night and the upsert overwrites the real one. Opening the app or
+        // pulling to refresh during the night was the only source of the
+        // partial-night rows — the 05:00 cron targets yesterday and is safe.
+        if !bleManager.healthEngine.sleepDetected,
+           let result = await bleManager.supabase.recomputeHealthMetrics() {
             await MainActor.run {
-                bleManager.healthEngine.recoveryScore = result.recovery
-                bleManager.healthEngine.sleepScore = result.sleepScore
+                bleManager.healthEngine.applyServerRecompute(result)
             }
         }
         // v121: server-authoritative Body Battery (reservoir − live drain).

@@ -320,41 +320,67 @@ extension HealthEngine {
             let t = Double(i) / sampleRate
             // Find bracketing RR values
             var j = 0
-            while j < cumTime.count - 1 && cumTime[j + 1] < t { j += 1 }
-            if j < window.count {
-                interpolated[i] = window[j]
-            }
+            while j < cumTime.count - 2 && cumTime[j + 1] < t { j += 1 }
+            let span = cumTime[j + 1] - cumTime[j]
+            let frac = span > 0 ? min(1.0, max(0.0, (t - cumTime[j]) / span)) : 0
+            let a = window[min(j, window.count - 1)]
+            let b = window[min(j + 1, window.count - 1)]
+            interpolated[i] = a + (b - a) * frac
         }
 
-        // Remove mean
-        let mean = interpolated.reduce(0, +) / Double(interpolated.count)
-        interpolated = interpolated.map { $0 - mean }
+        // Remove the linear trend, not just the mean. A slow RR drift leaves the
+        // autocorrelation decaying monotonically, which pins the band maximum at
+        // minLag and reports a constant 24.0 bpm.
+        let n = Double(interpolated.count)
+        let sumX = (n - 1) * n / 2
+        let sumXX = (n - 1) * n * (2 * n - 1) / 6
+        var sumY: Double = 0
+        var sumXY: Double = 0
+        for (i, v) in interpolated.enumerated() {
+            sumY += v
+            sumXY += Double(i) * v
+        }
+        let denom = n * sumXX - sumX * sumX
+        guard denom != 0 else { return }
+        let slope = (n * sumXY - sumX * sumY) / denom
+        let intercept = (sumY - slope * sumX) / n
+        for i in 0..<interpolated.count {
+            interpolated[i] -= intercept + slope * Double(i)
+        }
 
         // Simple peak-frequency detection via autocorrelation
         // Look for peaks in the respiratory band (0.15-0.4 Hz = 9-24 bpm)
         let minLag = Int(sampleRate / 0.4)  // 0.4 Hz upper bound
         let maxLag = Int(sampleRate / 0.15) // 0.15 Hz lower bound
 
-        guard maxLag < interpolated.count else { return }
+        guard minLag >= 2, maxLag + 1 < interpolated.count else { return }
 
-        var bestLag = minLag
-        var bestCorr: Double = -1
-
-        for lag in minLag...min(maxLag, interpolated.count - 1) {
+        // One lag either side of the band too, so an interior peak can be told
+        // apart from a plain band maximum.
+        var acf = [Double](repeating: 0, count: maxLag + 2)
+        for lag in (minLag - 1)...(maxLag + 1) {
             var corr: Double = 0
-            var count = 0
             for i in 0..<(interpolated.count - lag) {
                 corr += interpolated[i] * interpolated[i + lag]
-                count += 1
             }
-            if count > 0 {
-                corr /= Double(count)
-                if corr > bestCorr {
-                    bestCorr = corr
-                    bestLag = lag
-                }
+            acf[lag] = corr / Double(interpolated.count - lag)
+        }
+
+        // A real respiratory oscillation produces a local maximum inside the
+        // band. Monotonic decay means there is no rhythm to report, so publish
+        // nothing rather than the band edge.
+        var bestLag = -1
+        var bestCorr: Double = 0
+
+        for lag in minLag...maxLag {
+            let c = acf[lag]
+            if c > acf[lag - 1] && c >= acf[lag + 1] && c > bestCorr {
+                bestCorr = c
+                bestLag = lag
             }
         }
+
+        guard bestLag > 0 else { return }
 
         // Convert lag to frequency to breaths per minute
         let freq = sampleRate / Double(bestLag)

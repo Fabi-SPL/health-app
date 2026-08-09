@@ -71,10 +71,11 @@ extension HealthEngine {
             self.recoverySleepContribution = round(sleepComponent * 10) / 10
             self.recoveryRRContribution = 0
 
-            // Lock the day. recoveryScore stays whatever server-fetch most
-            // recently set it to (HealthEngine.fetchBaseline → scoresResult).
-            self.recoveryLockedDate = today
-            UserDefaults.standard.set(today, forKey: self.recoveryLockedDateKey)
+            // The day is locked further down, only once the server recompute has
+            // actually returned a value. Locking here meant a NULL result (called
+            // mid-night, before a sleep window exists) silently kept yesterday's
+            // number and froze it in place for the rest of the day, turning
+            // computeRecoveryFallbackIfNeeded into a no-op.
 
             // v121: Body Battery is NO LONGER seeded from recovery here — recovery
             // is the memoryless source we moved away from. The tank now comes
@@ -93,16 +94,15 @@ extension HealthEngine {
             let result = await SupabaseClient.shared.recomputeHealthMetrics()
             await MainActor.run {
                 guard let self else { return }
-                // v106 fix: was `r > 0` — but 0 is a valid recovery score on
-                // alcohol/burnout nights. nil is the no-data case; `if let` handles it.
-                if let r = result?.recovery, r >= 0 {
-                    self.recoveryScore = round(r)
-                    if r >= 67 { self.recoveryLabel = "Green" }
-                    else if r >= 34 { self.recoveryLabel = "Yellow" }
-                    else { self.recoveryLabel = "Red" }
-                    UserDefaults.standard.set(r, forKey: self.recoveryScoreTodayKey)
-                    print("[Recovery] v102 server recompute landed: \(Int(r))")
+                guard let result else {
+                    print("[Recovery] server recompute returned no window — day stays unlocked")
+                    return
                 }
+                self.applyServerRecompute(result)
+                print("[Recovery] v102 server recompute landed: \(Int(result.recovery))")
+                // Lock the day only now that a real server value has landed.
+                self.recoveryLockedDate = today
+                UserDefaults.standard.set(today, forKey: self.recoveryLockedDateKey)
             }
             // Body Battery v2 — seed the live battery from the carry-over reservoir
             // anchor (server), NOT memoryless recovery. The live engine
@@ -308,10 +308,19 @@ extension HealthEngine {
         guard !daytimeHRReadings.isEmpty else { return }
 
         let daytimeAvg = daytimeHRReadings.reduce(0, +) / Double(daytimeHRReadings.count)
-        let sleepAvg = recentHR.isEmpty ? baselineRHR : recentHR.reduce(0, +) / Double(recentHR.count)
 
-        guard daytimeAvg > 0 else { return }
-        let dip = ((daytimeAvg - sleepAvg) / daytimeAvg) * 100
+        // The night HR must come from inside the sleep window. recentHR is the live
+        // rolling buffer, and this runs from the wake callback when he is already up,
+        // so the "sleep" average came out ABOVE the daytime average and the dip went
+        // negative (-33.6 and -41.6 are both stored in the DB), which badged him a
+        // permanent Non-Dipper. sleepingMinHR is reset per night and is already what
+        // computeRecovery uses as the resting marker.
+        guard sleepingMinHR > 0, daytimeAvg > 0 else { return }
+        let dip = ((daytimeAvg - sleepingMinHR) / daytimeAvg) * 100
+
+        // A negative dip is not a physiological finding, it is missing data. Keep
+        // the previous value rather than writing a number that cannot be true.
+        guard dip >= 0 else { return }
 
         DispatchQueue.main.async {
             self.nocturnalHRDip = round(dip * 10) / 10
