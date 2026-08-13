@@ -3842,3 +3842,324 @@ extension SupabaseClient {
         }
     }
 }
+
+// MARK: - Workouts (v174) + intake back-solve (v173)
+//
+// Both keep the same bargain as everything else in this file: the server owns
+// the arithmetic, the app owns the pixels. Calorie calibration, heart-rate
+// zones and the weight-trend regression all live in Postgres, so changing any
+// of them is a migration, not an App Store review.
+
+extension SupabaseClient {
+
+    /// The picker is server-driven on purpose — adding "rowing" later is an
+    /// INSERT into workout_types, not a new build.
+    struct WorkoutType: Identifiable, Hashable {
+        let id: String              // key
+        let label: String
+        let emoji: String
+        let category: String
+        let tracksDistance: Bool
+        let tracksLoad: Bool
+    }
+
+    struct WorkoutSession: Identifiable {
+        let id: String
+        let typeKey: String
+        let label: String
+        let emoji: String
+        let startedAt: Date
+        let tracksDistance: Bool
+        let tracksLoad: Bool
+    }
+
+    struct WorkoutLive {
+        let elapsedSec: Int
+        let hrNow: Int?
+        let hrAvg: Int?
+        let hrPeak: Int?
+        let kcal: Int
+        let zone: String
+    }
+
+    struct WorkoutSummary {
+        let durationSec: Int
+        let distanceKm: Double?
+        let kcal: Int
+        /// "hr" when the strap carried the ride, "estimate" when the resistance
+        /// dial had to stand in for it. Worth showing — they are not equal.
+        let kcalSource: String
+        let hrAvg: Int?
+        let headline: String
+    }
+
+    struct WorkoutRecord: Identifiable {
+        let id: String
+        let label: String
+        let emoji: String
+        let startedAt: Date
+        let durationSec: Int
+        let distanceKm: Double?
+        let loadLevel: Int?
+        let rpe: Int?
+        let hrAvg: Int?
+        let kcal: Int
+        let kcalSource: String
+        let kmh: Double?
+
+        var minutes: Int { max(1, durationSec / 60) }
+    }
+
+    struct IntakeBacksolve {
+        let nWeighins: Int
+        let spanDays: Int
+        let firstKg: Double?
+        let lastKg: Double?
+        let trendKgPerWeek: Double?
+        let avgTdee: Int
+        let estIntake: Int?
+        let estBalance: Int?
+        /// none | low | ok | good — decides whether a number is shown at all.
+        let confidence: String
+        let headline: String
+
+        var hasNumber: Bool { estIntake != nil && confidence != "none" }
+    }
+
+    // MARK: Row parsing
+    // PostgREST returns numeric as a JSON number on some builds and a string on
+    // others. Reading only one shape silently yields zero.
+
+    private func wNum(_ r: [String: Any], _ k: String) -> Double? {
+        if let d = r[k] as? Double { return d }
+        if let n = r[k] as? NSNumber { return n.doubleValue }
+        if let s = r[k] as? String { return Double(s) }
+        return nil
+    }
+    private func wInt(_ r: [String: Any], _ k: String) -> Int? {
+        if let d = wNum(r, k) { return Int(d) }
+        return nil
+    }
+    private func wDate(_ r: [String: Any], _ k: String) -> Date? {
+        guard let s = r[k] as? String else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: s) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: s)
+    }
+
+    private func workoutSession(from r: [String: Any]) -> WorkoutSession? {
+        guard let id = r["id"] as? String, let started = wDate(r, "started_at") else { return nil }
+        return WorkoutSession(
+            id: id,
+            typeKey: r["type_key"] as? String ?? "",
+            label: r["label"] as? String ?? "Activity",
+            emoji: r["emoji"] as? String ?? "\u{1F4AA}",
+            startedAt: started,
+            tracksDistance: r["tracks_distance"] as? Bool ?? false,
+            tracksLoad: r["tracks_load"] as? Bool ?? false
+        )
+    }
+
+    // MARK: Calls
+
+    func fetchWorkoutTypes() async -> [WorkoutType] {
+        do {
+            try await ensureAuth()
+            guard let token = accessToken else { return [] }
+            var comps = URLComponents(string: "\(baseURL)/rest/v1/workout_types")!
+            comps.queryItems = [
+                URLQueryItem(name: "select", value: "*"),
+                URLQueryItem(name: "active", value: "eq.true"),
+                URLQueryItem(name: "order", value: "sort_order.asc")
+            ]
+            var req = URLRequest(url: comps.url!)
+            req.setValue(anonKey, forHTTPHeaderField: "apikey")
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
+            return rows.compactMap { r -> WorkoutType? in
+                guard let key = r["key"] as? String else { return nil }
+                return WorkoutType(
+                    id: key,
+                    label: r["label"] as? String ?? key,
+                    emoji: r["emoji"] as? String ?? "\u{1F4AA}",
+                    category: r["category"] as? String ?? "cardio",
+                    tracksDistance: r["tracks_distance"] as? Bool ?? false,
+                    tracksLoad: r["tracks_load"] as? Bool ?? false
+                )
+            }
+        } catch {
+            log("fetchWorkoutTypes failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Starting twice returns the session already running rather than failing —
+    /// a double tap on Start is a fat finger, not a second workout.
+    func workoutStart(type: String) async -> WorkoutSession? {
+        do {
+            let rows = try await rpcRows("workout_start", ["p_type": type, "p_user_id": userId])
+            if let first = rows.first { return workoutSession(from: first) }
+            return nil
+        } catch {
+            log("workout_start failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Survives the app being backgrounded or killed mid-ride.
+    func workoutOpen() async -> WorkoutSession? {
+        do {
+            let rows = try await rpcRows("workout_open", ["p_user_id": userId])
+            if let first = rows.first { return workoutSession(from: first) }
+            return nil
+        } catch { return nil }
+    }
+
+    func workoutLive(id: String) async -> WorkoutLive? {
+        do {
+            let rows = try await rpcRows("workout_live", ["p_id": id])
+            guard let r = rows.first else { return nil }
+            return WorkoutLive(
+                elapsedSec: wInt(r, "elapsed_sec") ?? 0,
+                hrNow: wInt(r, "hr_now"),
+                hrAvg: wInt(r, "hr_avg"),
+                hrPeak: wInt(r, "hr_peak"),
+                kcal: wInt(r, "kcal") ?? 0,
+                zone: r["zone"] as? String ?? ""
+            )
+        } catch { return nil }
+    }
+
+    func workoutFinish(id: String, distanceKm: Double?, load: Int?, rpe: Int?, notes: String? = nil) async -> WorkoutSummary? {
+        var body: [String: Any] = ["p_id": id]
+        if let d = distanceKm { body["p_distance_km"] = d }
+        if let l = load { body["p_load"] = l }
+        if let r = rpe { body["p_rpe"] = r }
+        if let n = notes, !n.isEmpty { body["p_notes"] = n }
+        do {
+            let rows = try await rpcRows("workout_finish", body)
+            guard let r = rows.first else { return nil }
+            return WorkoutSummary(
+                durationSec: wInt(r, "duration_sec") ?? 0,
+                distanceKm: wNum(r, "distance_km"),
+                kcal: wInt(r, "kcal") ?? 0,
+                kcalSource: r["kcal_source"] as? String ?? "",
+                hrAvg: wInt(r, "hr_avg"),
+                headline: r["headline"] as? String ?? ""
+            )
+        } catch {
+            log("workout_finish failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Started it, never rode. Deletes rather than storing a four-second ride.
+    func workoutCancel(id: String) async {
+        _ = try? await rpcRows("workout_cancel", ["p_id": id])
+    }
+
+    func workoutRecent(limit: Int = 30) async -> [WorkoutRecord] {
+        do {
+            let rows = try await rpcRows("workout_recent", ["p_user_id": userId, "p_limit": limit])
+            return rows.compactMap { r -> WorkoutRecord? in
+                guard let id = r["id"] as? String, let started = wDate(r, "started_at") else { return nil }
+                return WorkoutRecord(
+                    id: id,
+                    label: r["label"] as? String ?? "Activity",
+                    emoji: r["emoji"] as? String ?? "\u{1F4AA}",
+                    startedAt: started,
+                    durationSec: wInt(r, "duration_sec") ?? 0,
+                    distanceKm: wNum(r, "distance_km"),
+                    loadLevel: wInt(r, "load_level"),
+                    rpe: wInt(r, "rpe"),
+                    hrAvg: wInt(r, "hr_avg"),
+                    kcal: wInt(r, "kcal") ?? 0,
+                    kcalSource: r["kcal_source"] as? String ?? "",
+                    kmh: wNum(r, "kmh")
+                )
+            }
+        } catch {
+            log("workout_recent failed: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    // MARK: Weight and back-solved intake (v173)
+
+    /// The whole point: one number a morning replaces logging every meal.
+    @discardableResult
+    func logWeight(kg: Double) async -> Bool {
+        do {
+            _ = try await rpcRows("log_weight", ["p_kg": kg, "p_user_id": userId])
+            return true
+        } catch {
+            log("log_weight failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    func intakeBacksolve(days: Int = 14) async -> IntakeBacksolve? {
+        do {
+            let rows = try await rpcRows("intake_backsolve", ["p_user_id": userId, "p_days": days])
+            guard let r = rows.first else { return nil }
+            return IntakeBacksolve(
+                nWeighins: wInt(r, "n_weighins") ?? 0,
+                spanDays: wInt(r, "span_days") ?? 0,
+                firstKg: wNum(r, "first_kg"),
+                lastKg: wNum(r, "last_kg"),
+                trendKgPerWeek: wNum(r, "trend_kg_per_week"),
+                avgTdee: wInt(r, "avg_tdee") ?? 0,
+                estIntake: wInt(r, "est_intake"),
+                estBalance: wInt(r, "est_balance"),
+                confidence: r["confidence"] as? String ?? "none",
+                headline: r["headline"] as? String ?? ""
+            )
+        } catch {
+            log("intake_backsolve failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// Weigh-ins for the trend chart. Reads the table directly rather than an
+    /// RPC — it is two columns and no arithmetic.
+    func fetchWeightSeries(days: Int = 60) async -> [WeightPoint] {
+        do {
+            try await ensureAuth()
+            guard let token = accessToken else { return [] }
+            let df = DateFormatter()
+            df.dateFormat = "yyyy-MM-dd"
+            df.timeZone = TimeZone(identifier: "Europe/Berlin")
+            let since = df.string(from: Date().addingTimeInterval(-Double(days) * 86400))
+
+            var comps = URLComponents(string: "\(baseURL)/rest/v1/body_composition_log")!
+            comps.queryItems = [
+                URLQueryItem(name: "select", value: "measured_at,weight_kg"),
+                URLQueryItem(name: "user_id", value: "eq.\(userId)"),
+                URLQueryItem(name: "measured_at", value: "gte.\(since)"),
+                URLQueryItem(name: "weight_kg", value: "not.is.null"),
+                URLQueryItem(name: "order", value: "measured_at.asc")
+            ]
+            var req = URLRequest(url: comps.url!)
+            req.setValue(anonKey, forHTTPHeaderField: "apikey")
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let (data, _) = try await URLSession.shared.data(for: req)
+            let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
+            return rows.compactMap { r -> WeightPoint? in
+                guard let s = r["measured_at"] as? String, let d = df.date(from: s),
+                      let kg = wNum(r, "weight_kg") else { return nil }
+                return WeightPoint(date: d, kg: kg)
+            }
+        } catch {
+            return []
+        }
+    }
+
+    struct WeightPoint: Identifiable {
+        let date: Date
+        let kg: Double
+        var id: Date { date }
+    }
+}

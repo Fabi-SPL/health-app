@@ -358,6 +358,17 @@ struct TodayView: View {
                     .animation(DS.Anim.stagger(index: 4), value: appeared)
                     .scrollSectionTransition()
 
+                // v173 — the scale instead of the food log. Whoop measures the
+                // burn, the scale measures the result, intake is what has to be
+                // true in between.
+                WeightTrendCard()
+                    .padding(.horizontal, DS.Spacing.md)
+                    .padding(.top, DS.Spacing.md)
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared ? 0 : 20)
+                    .animation(DS.Anim.stagger(index: 5), value: appeared)
+                    .scrollSectionTransition()
+
                 // Last meal, food-stats bento + fasting moved to the Food tab
                 // (they duplicated Food's own surfaces). FAB keeps logging one tap away.
 
@@ -466,6 +477,11 @@ struct TodayView: View {
                 Spacer()
             }
             .padding(.horizontal, DS.Spacing.md)
+
+            // Tracked workouts (v174) — server owns the catalog and the calorie
+            // math. Free-text below still handles everything not worth a row.
+            WorkoutStrip()
+                .padding(.horizontal, DS.Spacing.md)
 
             if let active = bleManager.manualActivityType,
                let started = bleManager.manualActivityStart {
@@ -1378,5 +1394,602 @@ private struct LastNightCard: View {
         case "watch":    return DS.Colors.amber
         default:         return DS.Colors.teal
         }
+    }
+}
+
+// MARK: - Workout Strip (v174) — tracked sessions on top of the free-text composer
+//
+// The pills come from the server's workout_types table, so adding rowing later
+// is an INSERT, not an App Store review. Free-text below still catches
+// everything that isn't worth a row in that table.
+
+private struct WorkoutStrip: View {
+    @State private var types: [SupabaseClient.WorkoutType] = []
+    /// `open` drives the resume banner, `presented` drives the cover. One state
+    /// for both would make dismissing the cover also erase the row behind it.
+    @State private var open: SupabaseClient.WorkoutSession? = nil
+    @State private var presented: SupabaseClient.WorkoutSession? = nil
+    @State private var busy: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+            if let open {
+                // A session survives the app being killed mid-ride — the server
+                // holds it open, so coming back offers to re-enter it.
+                Button {
+                    DS.Haptic.tap()
+                    presented = open
+                } label: {
+                    HStack(spacing: DS.Spacing.sm) {
+                        Text(open.emoji).font(.system(size: 18))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(open.label)
+                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                .foregroundStyle(DS.Colors.textPrimary)
+                            Text("in progress")
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(DS.Colors.teal)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(DS.Colors.textMuted)
+                    }
+                    .padding(DS.Spacing.md)
+                    .glassDefault()
+                }
+                .buttonStyle(.plain)
+            } else if !types.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: DS.Spacing.sm) {
+                        ForEach(types) { t in
+                            Button {
+                                start(t)
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(t.emoji).font(.system(size: 13))
+                                    Text(t.label)
+                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(DS.Colors.textPrimary)
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(
+                                    Capsule()
+                                        .fill(DS.Colors.surfaceElevated)
+                                        .overlay(Capsule().stroke(DS.Colors.border, lineWidth: 0.5))
+                                )
+                                .opacity(busy == nil || busy == t.id ? 1 : 0.4)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(busy != nil)
+                        }
+                    }
+                    .padding(.horizontal, 1)
+                }
+            }
+        }
+        .task {
+            open = await SupabaseClient.shared.workoutOpen()
+            types = await SupabaseClient.shared.fetchWorkoutTypes()
+        }
+        .fullScreenCover(item: $presented) { s in
+            WorkoutLiveView(session: s) {
+                presented = nil
+                open = nil
+            }
+        }
+    }
+
+    private func start(_ t: SupabaseClient.WorkoutType) {
+        guard busy == nil else { return }
+        busy = t.id
+        DS.Haptic.commit()
+        Task {
+            let s = await SupabaseClient.shared.workoutStart(type: t.id)
+            await MainActor.run {
+                busy = nil
+                if let s {
+                    open = s
+                    presented = s
+                } else {
+                    DS.Haptic.error()
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Workout Live (the screen you look at mid-ride)
+
+private struct WorkoutLiveView: View {
+    let session: SupabaseClient.WorkoutSession
+    let onClosed: () -> Void
+
+    @State private var live: SupabaseClient.WorkoutLive? = nil
+    @State private var showFinish = false
+    @State private var summary: SupabaseClient.WorkoutSummary? = nil
+    @State private var finishing = false
+
+    var body: some View {
+        ZStack {
+            DS.Colors.bg.ignoresSafeArea()
+
+            if let summary {
+                finishedCard(summary)
+            } else {
+                liveBody
+            }
+        }
+        // Poll the server rather than deriving calories on-device: the same
+        // HR-load formula has to produce the same number here and in the daily
+        // total, and there is only one place it can live.
+        .task {
+            while !Task.isCancelled && summary == nil {
+                if let l = await SupabaseClient.shared.workoutLive(id: session.id) {
+                    await MainActor.run { live = l }
+                }
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+        .sheet(isPresented: $showFinish) {
+            WorkoutFinishSheet(
+                session: session,
+                busy: $finishing
+            ) { km, load, rpe in
+                Task {
+                    await MainActor.run { finishing = true }
+                    let s = await SupabaseClient.shared.workoutFinish(
+                        id: session.id, distanceKm: km, load: load, rpe: rpe
+                    )
+                    await MainActor.run {
+                        finishing = false
+                        showFinish = false
+                        if let s {
+                            DS.Haptic.success()
+                            summary = s
+                        } else {
+                            DS.Haptic.error()
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+        }
+    }
+
+    // MARK: Live
+
+    private var liveBody: some View {
+        VStack(spacing: DS.Spacing.lg) {
+            HStack {
+                Button {
+                    DS.Haptic.tap()
+                    Task {
+                        await SupabaseClient.shared.workoutCancel(id: session.id)
+                        await MainActor.run { onClosed() }
+                    }
+                } label: {
+                    Text("Discard")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(DS.Colors.textMuted)
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                HStack(spacing: 6) {
+                    Text(session.emoji).font(.system(size: 14))
+                    Text(session.label)
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .foregroundStyle(DS.Colors.textPrimary)
+                }
+            }
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.top, DS.Spacing.md)
+
+            Spacer()
+
+            // The clock ticks locally — a 5s server poll would stutter it, and
+            // elapsed time is the one number that needs no server to be right.
+            TimelineView(.periodic(from: session.startedAt, by: 1)) { ctx in
+                Text(clock(ctx.date.timeIntervalSince(session.startedAt)))
+                    .font(.system(size: 64, weight: .heavy, design: .rounded).monospacedDigit())
+                    .foregroundStyle(DS.Colors.textPrimary)
+                    .contentTransition(.numericText())
+            }
+
+            zoneBar
+
+            HStack(spacing: DS.Spacing.xl) {
+                stat(value: live?.hrNow.map { "\($0)" } ?? "—", unit: "bpm", color: DS.Colors.pink)
+                stat(value: "\(live?.kcal ?? 0)", unit: "kcal", color: DS.Colors.amber)
+                stat(value: live?.hrAvg.map { "\($0)" } ?? "—", unit: "avg", color: DS.Colors.teal)
+            }
+
+            Spacer()
+
+            Button {
+                DS.Haptic.commit()
+                showFinish = true
+            } label: {
+                Label("Finish", systemImage: "stop.fill")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(Capsule().fill(DS.Colors.violet))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, DS.Spacing.lg)
+            .padding(.bottom, DS.Spacing.xl)
+        }
+    }
+
+    private var zoneBar: some View {
+        VStack(spacing: DS.Spacing.sm) {
+            HStack(spacing: 4) {
+                ForEach(0..<5, id: \.self) { i in
+                    Capsule()
+                        .fill(i == zoneIndex ? zoneColor : DS.Colors.track)
+                        .frame(height: i == zoneIndex ? 8 : 5)
+                }
+            }
+            .animation(DS.Anim.standard, value: zoneIndex)
+            .frame(height: 10)
+
+            Text((live?.zone ?? "warm-up").uppercased())
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .tracking(1.2)
+                .foregroundStyle(zoneColor)
+        }
+        .padding(.horizontal, DS.Spacing.xl)
+    }
+
+    private var zoneIndex: Int {
+        switch live?.zone ?? "" {
+        case let z where z.hasPrefix("zone 5"): return 4
+        case let z where z.hasPrefix("zone 4"): return 3
+        case let z where z.hasPrefix("zone 3"): return 2
+        case let z where z.hasPrefix("zone 2"): return 1
+        default: return 0
+        }
+    }
+
+    private var zoneColor: Color {
+        switch zoneIndex {
+        case 4: return DS.Colors.danger
+        case 3: return DS.Colors.amber
+        case 2: return DS.Colors.violet
+        case 1: return DS.Colors.teal
+        default: return DS.Colors.textMuted
+        }
+    }
+
+    private func stat(value: String, unit: String, color: Color) -> some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.system(size: 26, weight: .heavy, design: .rounded).monospacedDigit())
+                .foregroundStyle(color)
+            Text(unit.uppercased())
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .tracking(1.0)
+                .foregroundStyle(DS.Colors.textMuted)
+        }
+    }
+
+    // MARK: Finished
+
+    private func finishedCard(_ s: SupabaseClient.WorkoutSummary) -> some View {
+        VStack(spacing: DS.Spacing.lg) {
+            Spacer()
+
+            Text(session.emoji).font(.system(size: 44))
+
+            Text(s.headline)
+                .font(.system(size: 20, weight: .heavy, design: .rounded))
+                .foregroundStyle(DS.Colors.textPrimary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, DS.Spacing.lg)
+
+            // An estimate and a measurement are not the same number, and the
+            // card says which one this was rather than pretending.
+            if s.kcalSource != "hr" {
+                Text("estimated from resistance — strap was off")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(DS.Colors.textMuted)
+            }
+
+            Spacer()
+
+            Button {
+                DS.Haptic.tap()
+                onClosed()
+            } label: {
+                Text("Done")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(Capsule().fill(DS.Colors.violet))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, DS.Spacing.lg)
+            .padding(.bottom, DS.Spacing.xl)
+        }
+    }
+
+    private func clock(_ secs: TimeInterval) -> String {
+        let t = max(0, Int(secs))
+        let h = t / 3600, m = (t % 3600) / 60, s = t % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - Finish sheet (distance / resistance / effort)
+
+private struct WorkoutFinishSheet: View {
+    let session: SupabaseClient.WorkoutSession
+    @Binding var busy: Bool
+    let onSave: (Double?, Int?, Int?) -> Void
+
+    @State private var kmText = ""
+    @State private var load: Int? = nil
+    @State private var rpe: Int? = nil
+    @FocusState private var kmFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.lg) {
+            Text("How was it?")
+                .font(.system(size: 20, weight: .heavy, design: .rounded))
+                .foregroundStyle(DS.Colors.textPrimary)
+                .padding(.top, DS.Spacing.lg)
+
+            if session.tracksDistance {
+                VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                    SectionHeader(title: "DISTANCE")
+                    HStack {
+                        TextField("0.0", text: $kmText)
+                            .keyboardType(.decimalPad)
+                            .focused($kmFocused)
+                            .font(.system(size: 17, weight: .semibold, design: .rounded).monospacedDigit())
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(DS.Colors.surfaceElevated)
+                            .clipShape(Capsule())
+                            .frame(width: 120)
+                        Text("km")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(DS.Colors.textMuted)
+                    }
+                }
+            }
+
+            // Worth filling in: with the strap off this dial IS the calorie
+            // number (MET scaled by resistance), not decoration.
+            if session.tracksLoad {
+                scale(title: "RESISTANCE", value: $load, tint: DS.Colors.violet)
+            }
+
+            scale(title: "EFFORT (RPE)", value: $rpe, tint: DS.Colors.amber)
+
+            Spacer()
+
+            Button {
+                let km = Double(kmText.replacingOccurrences(of: ",", with: "."))
+                onSave(km, load, rpe)
+            } label: {
+                Text(busy ? "Saving…" : "Save")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 15)
+                    .background(Capsule().fill(busy ? DS.Colors.violet.opacity(0.4) : DS.Colors.violet))
+            }
+            .buttonStyle(.plain)
+            .disabled(busy)
+            .padding(.bottom, DS.Spacing.lg)
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .background(DS.Colors.bg.ignoresSafeArea())
+    }
+
+    @ViewBuilder
+    private func scale(title: String, value: Binding<Int?>, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+            SectionHeader(title: title, trailing: value.wrappedValue.map { "\($0)" })
+            HStack(spacing: 4) {
+                ForEach(1...10, id: \.self) { n in
+                    Button {
+                        DS.Haptic.select()
+                        value.wrappedValue = (value.wrappedValue == n) ? nil : n
+                    } label: {
+                        Text("\(n)")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundStyle(value.wrappedValue == n ? .white : DS.Colors.textMuted)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 9)
+                            .background(
+                                RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
+                                    .fill(value.wrappedValue == n ? tint : DS.Colors.surfaceElevated)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Trend Card (v173) — the scale replaces the food log
+//
+// Energy balance runs backwards just as well as forwards: Whoop measures the
+// burn, the scale measures the result, and intake is what has to be true in
+// between. One number a morning instead of every meal.
+
+private struct WeightTrendCard: View {
+    @State private var series: [SupabaseClient.WeightPoint] = []
+    @State private var backsolve: SupabaseClient.IntakeBacksolve? = nil
+    @State private var showWeighIn = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
+            SectionHeader(icon: "scalemass.fill", title: "TREND", iconColor: DS.Colors.teal,
+                          trailing: series.last.map { String(format: "%.1f kg", $0.kg) })
+
+            if let b = backsolve, b.hasNumber {
+                numbers(b)
+            }
+
+            if series.count >= 2 {
+                chart
+            }
+
+            Text(backsolve?.headline ?? "Weigh in a few mornings and this starts reading your intake backwards.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(DS.Colors.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                DS.Haptic.tap()
+                showWeighIn = true
+            } label: {
+                Label("Weigh in", systemImage: "plus")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(DS.Colors.teal)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(
+                        Capsule()
+                            .fill(DS.Colors.teal.opacity(0.10))
+                            .overlay(Capsule().stroke(DS.Colors.teal.opacity(0.30), lineWidth: 0.5))
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(DS.Spacing.md)
+        .glassDefault()
+        .task { await load() }
+        .sheet(isPresented: $showWeighIn) {
+            WeighInSheet { kg in
+                Task {
+                    await SupabaseClient.shared.logWeight(kg: kg)
+                    await load()
+                    await MainActor.run { showWeighIn = false }
+                }
+            }
+            .presentationDetents([.height(260)])
+        }
+    }
+
+    private func numbers(_ b: SupabaseClient.IntakeBacksolve) -> some View {
+        HStack(spacing: DS.Spacing.md) {
+            cell(title: "ATE", value: b.estIntake.map { "\($0)" } ?? "—", tint: DS.Colors.violet)
+            cell(title: "BURNED", value: "\(b.avgTdee)", tint: DS.Colors.amber)
+            cell(
+                title: "BALANCE",
+                value: b.estBalance.map { $0 > 0 ? "+\($0)" : "\($0)" } ?? "—",
+                tint: (b.estBalance ?? 0) <= 0 ? DS.Colors.success : DS.Colors.textSecondary
+            )
+        }
+    }
+
+    private func cell(title: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .tracking(1.0)
+                .foregroundStyle(DS.Colors.textMuted)
+            Text(value)
+                .font(.system(size: 19, weight: .heavy, design: .rounded).monospacedDigit())
+                .foregroundStyle(tint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var chart: some View {
+        Chart {
+            ForEach(series) { p in
+                LineMark(x: .value("Day", p.date), y: .value("kg", p.kg))
+                    .interpolationMethod(.catmullRom)
+                    .foregroundStyle(DS.Colors.teal)
+                PointMark(x: .value("Day", p.date), y: .value("kg", p.kg))
+                    .foregroundStyle(DS.Colors.teal)
+                    .symbolSize(18)
+            }
+        }
+        // Auto-scaling to the data would turn 200g of water weight into a cliff.
+        .chartYScale(domain: yDomain)
+        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
+        .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
+        .frame(height: 90)
+    }
+
+    private var yDomain: ClosedRange<Double> {
+        let kgs = series.map(\.kg)
+        guard let lo = kgs.min(), let hi = kgs.max() else { return 70...80 }
+        let pad = max(0.8, (hi - lo) * 0.35)
+        return (lo - pad)...(hi + pad)
+    }
+
+    private func load() async {
+        let s = await SupabaseClient.shared.fetchWeightSeries(days: 60)
+        let b = await SupabaseClient.shared.intakeBacksolve(days: 14)
+        await MainActor.run {
+            series = s
+            backsolve = b
+        }
+    }
+}
+
+private struct WeighInSheet: View {
+    let onSave: (Double) -> Void
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    private var kg: Double? {
+        let v = Double(text.replacingOccurrences(of: ",", with: "."))
+        guard let v, v >= 30, v <= 250 else { return nil }
+        return v
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.lg) {
+            Text("This morning")
+                .font(.system(size: 20, weight: .heavy, design: .rounded))
+                .foregroundStyle(DS.Colors.textPrimary)
+                .padding(.top, DS.Spacing.lg)
+
+            HStack {
+                TextField("76.0", text: $text)
+                    .keyboardType(.decimalPad)
+                    .focused($focused)
+                    .font(.system(size: 24, weight: .heavy, design: .rounded).monospacedDigit())
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(DS.Colors.surfaceElevated)
+                    .clipShape(Capsule())
+                    .frame(width: 150)
+                Text("kg")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(DS.Colors.textMuted)
+            }
+
+            Button {
+                if let kg { DS.Haptic.success(); onSave(kg) }
+            } label: {
+                Text("Save")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 15)
+                    .background(Capsule().fill(kg == nil ? DS.Colors.teal.opacity(0.35) : DS.Colors.teal))
+            }
+            .buttonStyle(.plain)
+            .disabled(kg == nil)
+
+            Spacer()
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .background(DS.Colors.bg.ignoresSafeArea())
+        .onAppear { focused = true }
     }
 }
