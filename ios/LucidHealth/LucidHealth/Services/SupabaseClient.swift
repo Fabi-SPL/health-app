@@ -160,6 +160,16 @@ class SupabaseClient {
     // On-screen logger — set by BLEManager
     var onLog: ((String) -> Void)?
 
+    /// Postgres text cannot hold U+0000, and PostgREST rejects the whole request
+    /// with 22P05 while parsing, before any trigger or constraint runs. BLE frame
+    /// bytes routinely land in log strings this way, which is why every app-log
+    /// batch was failing. Strip NULs and the other non-printing control codes.
+    static func pgSafe(_ s: String) -> String {
+        String(s.unicodeScalars.filter { u in
+            u.value == 10 || u.value == 9 || !CharacterSet.controlCharacters.contains(u)
+        })
+    }
+
     private func log(_ msg: String) {
         let full = "[SB] \(msg)"
         print(full)
@@ -2038,8 +2048,8 @@ class SupabaseClient {
                     "source": "whoop-ble",
                     "category": key,
                     "key": key,
-                    "value": value,
-                    "content": "[BLE_DEBUG] \(key): \(value)"
+                    "value": Self.pgSafe(value),
+                    "content": Self.pgSafe("[BLE_DEBUG] \(key): \(value)")
                 ]
                 request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -2678,11 +2688,11 @@ class SupabaseClient {
                     "user_id": userId,
                     "category": "device_log",
                     "title": "LucidBridge Log Batch",
-                    "summary": "[\(sessionId)] \(lines.count) lines — \(lines.last?.prefix(80) ?? "")",
+                    "summary": Self.pgSafe("[\(sessionId)] \(lines.count) lines — \(lines.last?.prefix(80) ?? "")"),
                     "details": [
                         "session_id": sessionId,
                         "line_count": lines.count,
-                        "lines": lines,
+                        "lines": lines.map(Self.pgSafe),
                         "device": UIDevice.current.name,
                         "timestamp": fmt.string(from: Date())
                     ] as [String: Any],
