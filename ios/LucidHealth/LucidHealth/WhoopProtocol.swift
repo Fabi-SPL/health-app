@@ -401,7 +401,7 @@ struct WhoopProtocol {
     /// Then:   pdata[15] = rrnum, pdata[16:24] = rr1-4 as uint16 LE
     /// v142 — upper bound added. Firmware 41.x sends 73-byte raw waveform frames on
     /// the same type/cmd; byte 14 there is a constant 0/1, not HR, so this parser
-    /// must never see them (see isRawWaveformFrame).
+    /// must never see them (see historyFrameKind).
     static func parseHistoricalRecord(data: Data) -> HRReading? {
         guard data.count >= 24, data.count < 70 else { return nil }
 
@@ -430,15 +430,54 @@ struct WhoopProtocol {
         return HRReading(timestamp: unix, heartRate: heart, rrIntervals: rrIntervals)
     }
 
-    /// True when the frame is the firmware-41.x raw waveform shape (type=47 cmd=0
-    /// len=73) rather than the legacy <LHLB> HR record.
-    static func isRawWaveformFrame(data: Data) -> Bool {
-        return data.count >= 70
+    /// The frame shapes firmware 41.x serves on type=47. Discriminating on length
+    /// alone was the bug: `count >= 70` swept the 93-byte status frames into the
+    /// raw-waveform stub together with the 73-byte PPG frames, so the one shape
+    /// that does carry heart rate was discarded along with the one that doesn't.
+    enum HistoryFrameKind {
+        case legacyRecord   // < 70 bytes — the original <LHLB> cooked record
+        case statusWithHR   // cmd 5/7, 93 bytes — cooked HR at byte 14
+        case rawWaveform    // cmd 0, 73 bytes — raw optical waveform, no HR in it
     }
 
-    /// Firmware-41.x raw waveform frame. HR is NOT cooked into the packet — deriving
-    /// it is a separate reverse-engineering job, and guessing offsets would inject
-    /// fake HR into recovery scores. Returns nil until the layout is proven.
+    static func historyFrameKind(cmd: UInt8, data: Data) -> HistoryFrameKind {
+        if data.count >= 90 && (cmd == 5 || cmd == 7) { return .statusWithHR }
+        if data.count >= 70 { return .rawWaveform }
+        return .legacyRecord
+    }
+
+    /// Firmware-41.x status frame (type=47, cmd=5 or 7, len=93), emitted once per
+    /// second alongside the raw waveform.
+    ///
+    /// Layout: [0:4] record counter · [4:8] unix uint32 LE · [8:12] microseconds
+    /// [12:14] uint16 · [14] heart rate · then float32 triples holding a unit
+    /// gravity vector (magnitude 1.0, which is what identified them).
+    ///
+    /// Byte 14 was verified against ground truth before being trusted, because a
+    /// wrong guess here feeds invented HR straight into recovery scores. Compared
+    /// to 15,208 realtime_health samples the strap never saw: r = 0.90, mean abs
+    /// error 4.35 bpm. Time-shifted controls separate cleanly — aligned MAE 5.3 bpm
+    /// vs 13.7 at +20 min, 15.1 at +1 h, 19.7 at -3 h — so the field is genuinely
+    /// time-locked heart rate and not two HR-shaped series happening to agree.
+    ///
+    /// Carries no RR intervals, so history can restore HR but never HRV.
+    static func parseHistoricalStatusFrame(data: Data) -> HRReading? {
+        guard data.count >= 16 else { return nil }
+        let s = data.startIndex
+        let unix = UInt32(data[s+4]) | (UInt32(data[s+5]) << 8) |
+                   (UInt32(data[s+6]) << 16) | (UInt32(data[s+7]) << 24)
+        let hr = data[s + 14]
+        // 0 means off-wrist. Anything outside a plausible human range is a layout
+        // surprise rather than a reading, and is dropped instead of stored.
+        guard hr >= 30, hr <= 220 else { return nil }
+        guard unix > 1_600_000_000 else { return nil }
+        return HRReading(timestamp: unix, heartRate: hr, rrIntervals: [])
+    }
+
+    /// Firmware-41.x raw waveform frame (cmd 0, 73 bytes): ~28 int16 optical
+    /// samples per second. Heart rate is not cooked into it — recovering HR would
+    /// mean running a full PPG pipeline, and the status frame above already
+    /// carries the strap's own answer at the same 1 Hz. Deliberately returns nil.
     static func parseHistoricalRawFrame(data: Data) -> HRReading? {
         return nil
     }

@@ -256,12 +256,19 @@ class BLEManager: NSObject, ObservableObject {
     private var historyBuffer: [HRReading] = []
     private var historyBatchCount = 0
     private var historyRawCaptureCount = 0  // v113 — bounds raw-hex logging of history packets per sync
+    private var historyRawCaptureByShape: [String: Int] = [:]  // v183 — per-shape capture budget
     // v142 — history frame accounting. Frames used to die silently at the hr>0 gate.
-    private var historyShapeReported = false
+    private var historyShapesReported: Set<String> = []
     private var historyFramesSeen = 0
     private var historyParsedOK = 0
     private var historySkippedZeroHR = 0
     private var historyRejectedShape = 0
+    private var lastHistoryActivityAt = Date()
+    private var historySyncStartedAt = Date()
+    private var historyRoundFrames = 0        // frames this round; 0 means the strap gave us nothing
+    private var historyDrainRound = 0         // continuation rounds used on this connection
+    private var historyEndedEarly = false     // true when we stopped before META_HISTORY_COMPLETE
+    private let historyMaxDrainRounds = 6
     private var historySyncTimer: DispatchSourceTimer?  // background-safe (was Timer on main runloop — frozen while suspended)
     private let lastSyncKey = "lucid_last_sync_timestamp"
 
@@ -1480,14 +1487,20 @@ class BLEManager: NSObject, ObservableObject {
     /// counter. Name kept to avoid churning the two call sites.
     private func sendHistoryRequestWithPreamble(_ p: CBPeripheral, _ c: CBCharacteristic, trigger: String) {
         historyRawCaptureCount = 0
-        historyShapeReported = false
+        historyRawCaptureByShape.removeAll()
+        historyShapesReported.removeAll()
         resetHistoryFrameCounters()
         p.writeValue(WhoopProtocol.requestHistoryPacket(), for: c, type: .withResponse)
         supabase.pushDebugLog(key: "history_request_sent_bare", value: "trigger=\(trigger) v114 bare-cmd22 (preamble reverted)")
         log("History request (bare CMD 22) sent [\(trigger)] — waiting for strap…")
     }
 
-    private func startHistoryDownload(overrideGapStart: Date? = nil) {
+    private func startHistoryDownload(overrideGapStart: Date? = nil, continuationRound: Bool = false) {
+        // A fresh (non-continuation) sync is a new connection's first drain, so the
+        // round budget resets. Continuations must not reset it or they never stop.
+        if !continuationRound { historyDrainRound = 0 }
+        historyRoundFrames = 0
+        historyEndedEarly = false
         guard peripheral != nil, cmdToStrap != nil else {
             log("History download skipped — no peripheral/char")
             startRealtimeStreaming()
@@ -1552,20 +1565,36 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
 
-    /// One-shot 120s history watchdog, on bleQueue rather than the main runloop.
-    /// A main-runloop Timer is frozen while the app is suspended, so a background
-    /// sync that stalled never finalized — and since startRealtimeStreaming() is
-    /// only reached from the finalizer, live HR was lost for the whole connection.
+    /// History watchdog on bleQueue rather than the main runloop. A main-runloop
+    /// Timer is frozen while the app is suspended, so a background sync that stalled
+    /// never finalized — and since startRealtimeStreaming() is only reached from the
+    /// finalizer, live HR was lost for the whole connection.
+    ///
+    /// v183 — this was a hard 120s cap on total duration, which is the wrong shape
+    /// for this job. The strap replays its ring at roughly 8.5x realtime, so 120s
+    /// drained about 17 minutes of history per session while 24 hours accumulated
+    /// each day. The backlog could only diverge, and it did: the cursor sat five
+    /// days behind. Give up on SILENCE instead, so a session that is still being fed
+    /// keeps going, with a generous ceiling that only exists to release the radio if
+    /// the link wedges.
     private func armHistorySyncTimeout(trigger: String) {
         historySyncTimer?.cancel()
+        lastHistoryActivityAt = Date()
+        historySyncStartedAt = Date()
         let timer = DispatchSource.makeTimerSource(queue: bleQueue)
-        timer.schedule(deadline: .now() + 120)
+        timer.schedule(deadline: .now() + 10, repeating: 10)
         timer.setEventHandler { [weak self] in
             guard let self, self.isDownloadingHistory else { return }
-            self.log("History download TIMEOUT after 120s [\(trigger)] — \(self.historyBuffer.count) records received")
+            let idle = Date().timeIntervalSince(self.lastHistoryActivityAt)
+            let total = Date().timeIntervalSince(self.historySyncStartedAt)
+            guard idle >= 45 || total >= 1800 else { return }
+            self.historySyncTimer?.cancel(); self.historySyncTimer = nil
+            self.historyEndedEarly = true
+            let why = idle >= 45 ? "idle" : "ceiling"
+            self.log("History download STOPPED (\(why)) [\(trigger)] — \(self.historyBuffer.count) records received")
             self.supabase.pushDebugLog(
                 key: "history_sync_timeout",
-                value: "trigger=\(trigger) records_buffered=\(self.historyBuffer.count) batches=\(self.historyBatchCount)"
+                value: "trigger=\(trigger) reason=\(why) idle_s=\(Int(idle)) total_s=\(Int(total)) records_buffered=\(self.historyBuffer.count) batches=\(self.historyBatchCount) frames=\(self.historyRoundFrames)"
             )
             self.finishHistoryDownload()
         }
@@ -1578,6 +1607,9 @@ class BLEManager: NSObject, ObservableObject {
     /// both auto-reconnect and manual-72h paths — branches on isManualBackfillMode
     /// only for UI state updates.
     private func finishHistoryDownload() {
+        // The watchdog repeats every 10s now rather than firing once, so every exit
+        // path has to stop it or it spins for the life of the process.
+        historySyncTimer?.cancel(); historySyncTimer = nil
         isDownloadingHistory = false
         DispatchQueue.main.async { self.isHistorySyncing = false }
 
@@ -1598,6 +1630,27 @@ class BLEManager: NSObject, ObservableObject {
         // while the upload async-runs in the background.
         bleQueue.async { self.startRealtimeStreaming() }
         finishHistoryWithDedup(trigger: trigger)
+
+        // v183 — keep draining. A backlog days deep cannot clear in one session, and
+        // waiting for the next reconnect to continue is what let it diverge. Only
+        // continue when this round actually produced frames, so an empty ring stops
+        // immediately rather than burning the whole budget. The breather hands the
+        // radio back to live streaming between rounds.
+        let roundProducedData = historyRoundFrames > 0
+        if historyEndedEarly, roundProducedData, !isManualBackfillMode,
+           historyDrainRound < historyMaxDrainRounds {
+            historyDrainRound += 1
+            let round = historyDrainRound
+            supabase.pushDebugLog(
+                key: "history_sync_continuation",
+                value: "round=\(round)/\(historyMaxDrainRounds) frames_last_round=\(historyRoundFrames)"
+            )
+            bleQueue.asyncAfter(deadline: .now() + 60) { [weak self] in
+                guard let self, !self.isDownloadingHistory, self.peripheral != nil else { return }
+                self.log("History: starting continuation drain round \(round)")
+                self.startHistoryDownload(continuationRound: true)
+            }
+        }
     }
 
     /// Shared finalizer for both auto-reconnect and manual-72h paths.
@@ -1713,6 +1766,16 @@ class BLEManager: NSObject, ObservableObject {
             // destroyed it, because the old narrow accept window made
             // skippedOutOfRange >= 100 permanently true. A real pulse among the
             // rejected records means the buffer is live, not wedged — never erase it.
+            //
+            // v183 — on firmware 41.x this path is now unreachable BY CONSTRUCTION,
+            // and that is deliberate. parseHistoricalStatusFrame refuses any HR below
+            // 30, so oorMaxHR can never land under 25 while status frames are what the
+            // strap serves. The cursor was never actually wedged either: it advances
+            // monotonically across reconnects (Aug 21 -> Aug 23 over six days), it was
+            // just far slower than the backlog grew. Erasing would have destroyed
+            // exactly the nights we can now decode. The gate still guards the legacy
+            // <LHLB> shape, which can emit sub-25 garbage, and the manual flush button
+            // remains the escape hatch. Do not "repair" this into firing again.
             if trigger == "auto-reconnect",
                recordsFromStrap.count >= 100,
                dedupedRecords.isEmpty,
@@ -1800,6 +1863,10 @@ class BLEManager: NSObject, ObservableObject {
 
     private func handleHistoryData(_ packet: WhoopPacket) {
         guard isDownloadingHistory else { return }
+        // Traffic of any shape counts as liveness — a frame we cannot decode still
+        // proves the strap is feeding us and the session should not be cut off.
+        lastHistoryActivityAt = Date()
+        historyRoundFrames += 1
 
         // v113 — capture ground-truth bytes for the first 40 history packets per
         // sync (shared budget with the unknown-type branch). Firmware 41.x appears
@@ -1810,7 +1877,12 @@ class BLEManager: NSObject, ObservableObject {
         // Log size + seq (version discriminator) + the byte the parser treats as
         // HR + the parse outcome so the next build fixes the layout with zero
         // guessing. Pure diagnostic — behaviour below is unchanged.
-        if historyRawCaptureCount < 40 {
+        // Per-shape budget rather than one shared pool: a shape that only shows up
+        // after the first 40 frames used to be invisible in the capture log.
+        let capKey = "\(packet.cmd)/\(packet.data.count)"
+        let capturedForShape = historyRawCaptureByShape[capKey] ?? 0
+        if capturedForShape < 25 {
+            historyRawCaptureByShape[capKey] = capturedForShape + 1
             historyRawCaptureCount += 1
             let d = packet.data
             let s = d.startIndex
@@ -1824,26 +1896,42 @@ class BLEManager: NSObject, ObservableObject {
             )
         }
 
-        // v142 — shape discriminator. Firmware 41.x sends type=47 cmd=0 len=73 raw
-        // waveform frames; the legacy <LHLB> parser read byte 14 (a constant 0/1
-        // there) and every frame died at the hr>0 gate below with zero telemetry,
-        // so three days of missing data looked identical to "strap had nothing".
-        let isRaw = WhoopProtocol.isRawWaveformFrame(data: packet.data)
-        if !historyShapeReported {
-            historyShapeReported = true
+        // Firmware 41.x serves two shapes: cmd=0 len=73 raw optical waveform (no HR
+        // in it) and cmd=5/7 len=93 status frames carrying the strap's own HR at
+        // 1 Hz. v142 routed on length alone, so both went to the waveform stub and
+        // every sync finished with records=0 — indistinguishable from "strap had
+        // nothing". v183 routes on cmd and recovers the status frames.
+        let kind = WhoopProtocol.historyFrameKind(cmd: packet.cmd, data: packet.data)
+        // v183 — report EVERY distinct shape, not just the first one seen. The old
+        // one-shot flag logged "raw_waveform_stub" from the first 73-byte frame and
+        // then went quiet, so the 93-byte HR frames arriving on the same stream were
+        // never mentioned anywhere. A diagnostic that stops after one sample hides
+        // exactly the case it exists to catch.
+        let shapeKey = "\(packet.cmd)/\(packet.data.count)"
+        if !historyShapesReported.contains(shapeKey) {
+            historyShapesReported.insert(shapeKey)
             let trigger = isManualBackfillMode ? "manual-72h" : "auto-reconnect"
+            let decoder: String
+            switch kind {
+            case .statusWithHR: decoder = "status_hr_byte14"
+            case .rawWaveform:  decoder = "raw_waveform_stub"
+            case .legacyRecord: decoder = "legacy_lhlb"
+            }
             supabase.pushDebugLog(
                 key: "history_frame_shape",
-                value: "trigger=\(trigger) type=\(packet.type) cmd=\(packet.cmd) len=\(packet.data.count) decoder_selected=\(isRaw ? "raw_waveform_stub" : "legacy_lhlb")"
+                value: "trigger=\(trigger) type=\(packet.type) cmd=\(packet.cmd) len=\(packet.data.count) decoder_selected=\(decoder)"
             )
         }
 
-        // Parse the record — we only need HR and RR values
-        // Timestamps will be distributed evenly across the gap later
+        // Parse the record. Status frames carry the strap's own HR at 1 Hz; raw
+        // waveform frames carry optical samples only and yield nothing.
         historyFramesSeen += 1
-        let parsed = isRaw
-            ? WhoopProtocol.parseHistoricalRawFrame(data: packet.data)
-            : WhoopProtocol.parseHistoricalRecord(data: packet.data)
+        let parsed: HRReading?
+        switch kind {
+        case .statusWithHR: parsed = WhoopProtocol.parseHistoricalStatusFrame(data: packet.data)
+        case .rawWaveform:  parsed = WhoopProtocol.parseHistoricalRawFrame(data: packet.data)
+        case .legacyRecord: parsed = WhoopProtocol.parseHistoricalRecord(data: packet.data)
+        }
 
         guard let reading = parsed else {
             historyRejectedShape += 1
@@ -1883,6 +1971,7 @@ class BLEManager: NSObject, ObservableObject {
 
     private func handleHistoryMetadata(_ packet: WhoopPacket) {
         guard isDownloadingHistory else { return }
+        lastHistoryActivityAt = Date()
         let trigger = isManualBackfillMode ? "manual-72h" : "auto-reconnect"
 
         switch packet.cmd {
@@ -1924,6 +2013,7 @@ class BLEManager: NSObject, ObservableObject {
             }
 
         case 3: // META_HISTORY_COMPLETE — all done!
+            historyEndedEarly = false
             log("HISTORY COMPLETE! \(historyBuffer.count) total records across \(historyBatchCount) batches")
             historySyncTimer?.cancel(); historySyncTimer = nil
 
