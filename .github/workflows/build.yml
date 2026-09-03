@@ -25,11 +25,37 @@ jobs:
       # 1.0.96, so AltStore saw a downgrade and offered no update. Commit count
       # is a property of the repository, so it cannot be reset out from under a
       # released build.
-      - name: Derive build number from commit count
+      - name: Derive build number (monotonic - never below what is published)
+        env:
+          SUPABASE_STORAGE_PUBLIC_BASE: ${{ vars.SUPABASE_STORAGE_PUBLIC_BASE }}
         run: |
-          BUILD_NUM=$(git rev-list --count HEAD)
+          COMMITS=$(git rev-list --count HEAD)
+
+          # Commit count is a property of the repository, so it survives an
+          # Actions-counter reset. It does NOT survive a history rewrite, and it
+          # says nothing about what the phone has actually been offered. Either
+          # one can silently produce a build that numbers itself at or below the
+          # installed version, at which point AltStore correctly shows "no
+          # update" - forever, with a green build every time and nothing in the
+          # log that looks wrong.
+          #
+          # The published source.json is the only record of what the device has
+          # been offered, so clamp against it. Monotonic by construction from
+          # here on, whatever happens to git history.
+          SRC="${SUPABASE_STORAGE_PUBLIC_BASE}/altstore-source.json"
+          JQ='[.apps[] | select(.bundleIdentifier == "com.fabi.lucidhealth") | .buildVersion | tonumber] | first // 0'
+          PUBLISHED=$(curl -fsS --max-time 20 "$SRC" | jq -r "$JQ") || PUBLISHED=0
+          case "$PUBLISHED" in ''|*[!0-9]*) PUBLISHED=0 ;; esac
+
+          if [ "$COMMITS" -gt "$PUBLISHED" ]; then
+            BUILD_NUM=$COMMITS
+          else
+            BUILD_NUM=$((PUBLISHED + 1))
+            echo "::warning::commit count ($COMMITS) is at or below the published build ($PUBLISHED). Bumping to $BUILD_NUM so AltStore sees an update."
+          fi
+
           echo "BUILD_NUM=${BUILD_NUM}" >> $GITHUB_ENV
-          echo "Build number: ${BUILD_NUM} (run_number was ${GITHUB_RUN_NUMBER})"
+          echo "commits=${COMMITS} published=${PUBLISHED} -> build ${BUILD_NUM}"
 
       - name: Select latest Xcode
         run: |

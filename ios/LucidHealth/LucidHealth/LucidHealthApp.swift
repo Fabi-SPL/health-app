@@ -63,6 +63,10 @@ struct LucidHealthApp: App {
             // on every foreground — clears it once the server session completes
             // (post-wake / next day), re-enabling the local light-sleep detector.
             Task { await bleManager.refreshSmartWakeStatus() }
+            // Opening the app while the alarm is going off is the same statement
+            // as tapping Stop Alarm on the lock screen. Guarded inside, so a
+            // normal foreground at 3pm does nothing at all.
+            bleManager.stopAlarmIfRinging(reason: "app_foregrounded")
             startAuthRefreshTimer()
         case .background, .inactive:
             stopAuthRefreshTimer()

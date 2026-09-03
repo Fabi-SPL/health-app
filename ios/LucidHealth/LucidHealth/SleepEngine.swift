@@ -537,6 +537,16 @@ extension HealthEngine {
     /// UI reflects server truth. Eliminates the cache-overwrite race that kept
     /// recovery stuck at stale values for weeks.
     func manualWakeUp() {
+        // Kill any ringing alarm FIRST, above both guards below. Tapping "I'm
+        // awake" while the strap is buzzing obviously means stop, and this used
+        // to do nothing about it - the tap closed the sleep session and left the
+        // ramp running. Posted rather than called directly: HealthEngine has no
+        // BLEManager reference, the same decoupling the lock-screen Stop Alarm
+        // action already uses. No-op when nothing is firing.
+        NotificationCenter.default.post(
+            name: .lucidStopAlarm, object: nil,
+            userInfo: ["source": "im_awake_button"]
+        )
         // Only meaningful while sleep is currently detected. Otherwise no-op.
         guard sleepDetected || sleepStartTime != nil else {
             print("[ManualWake] No sleep session active — ignored")

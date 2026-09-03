@@ -175,6 +175,12 @@ class BLEManager: NSObject, ObservableObject {
     /// instead of running its fixed ~80s script no matter what.
     private var wakeRampWorkItems: [DispatchWorkItem] = []
 
+    /// Wall-clock of the last wake-ramp START. Distinct from lastActuatorFireAt
+    /// (an 8-min DEDUP window, deliberately long so two code paths can't stack a
+    /// double buzz) - this one answers a different question: "is the alarm
+    /// bothering him RIGHT NOW", which is what every kill gesture needs to know.
+    private var lastAlarmFireAt: Date?
+
     // MARK: - Sleep onset tracking (for sleep timing/consistency)
     private var lastSleepOnsetTime: Date?
 
@@ -3303,9 +3309,13 @@ extension BLEManager: CBPeripheralDelegate {
             eventName = "WRIST_OFF"
             DispatchQueue.main.async { self.isWorn = false }
             healthEngine.onWristOff()
+            // Taking the strap off during the alarm is not ambiguous.
+            stopAlarmIfRinging(reason: "wrist_off")
         case WhoopEvent.chargingOn.rawValue:
             eventName = "CHARGING_ON"
             DispatchQueue.main.async { self.isCharging = true }
+            // Strap went on the charger mid-alarm: he is up and done with it.
+            stopAlarmIfRinging(reason: "charger")
         case WhoopEvent.chargingOff.rawValue:
             eventName = "CHARGING_OFF"
             DispatchQueue.main.async { self.isCharging = false }
@@ -3436,6 +3446,24 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
         let now = Date()
+
+        // While the alarm is ringing, a double tap means "shut up" and nothing
+        // else. Deliberately checked BEFORE both guards below: being woken by a
+        // vibrating strap spikes HR straight past the 110bpm exercise gate, and
+        // a frustrated second tap 3s after the first trips the 8s debounce - so
+        // the two guards would swallow exactly the taps that matter most.
+        if isAlarmRinging {
+            stopAlarm(reason: "double_tap")
+            doubleTapDebounce = now
+            // No ack buzz. The single thing he does not want from a strap he
+            // just silenced is one more vibration.
+            sendQuickTagNotification(
+                title: "Alarm off",
+                body: "Double tap heard. Back to sleep or up - your call."
+            )
+            return
+        }
+
         // Debounce: 8 seconds between valid taps (reduces false positives from jumps/clapping)
         guard now.timeIntervalSince(doubleTapDebounce) > 8.0 else {
             log("Double tap ignored — debounce (< 8s since last)")
@@ -4315,6 +4343,29 @@ extension BLEManager: CBPeripheralDelegate {
         if let sessionId = sessionId { lastActuatedSessionId = sessionId }
     }
 
+    /// "Is the alarm bothering him right now?" - the predicate every kill
+    /// gesture is gated on. True while the ~80s ramp still has pending steps,
+    /// and for 5 min after it started: past the buzzing itself there are still
+    /// scheduled fallback + backup notifications that a "stop" must cancel too.
+    ///
+    /// NOT healthEngine.smartAlarmTriggered: that flag stays true from the
+    /// trigger until stopAlarm() or the next day's reset, so gating on it would
+    /// turn every double tap for the rest of the morning into an alarm-stop and
+    /// eat the quick-tag sheet.
+    var isAlarmRinging: Bool {
+        if !wakeRampWorkItems.isEmpty { return true }
+        if let at = lastAlarmFireAt, Date().timeIntervalSince(at) < 300 { return true }
+        return false
+    }
+
+    /// stopAlarm(), but a no-op when nothing is firing. For the ambient kill
+    /// gestures (wrist off, charger, app opened) where the same action means
+    /// something entirely different outside an alarm and must not log or buzz.
+    func stopAlarmIfRinging(reason: String) {
+        guard isAlarmRinging else { return }
+        stopAlarm(reason: reason)
+    }
+
     /// The progressive strap-buzz + haptic wake ramp — extracted verbatim from
     /// the local smart-alarm callback so the v154 server path reuses the EXACT
     /// same tuned mechanism (gentle → escalate → peak over ~80s, each escalation
@@ -4322,6 +4373,7 @@ extension BLEManager: CBPeripheralDelegate {
     func fireWakeHapticRamp(reasonLabel: String) {
         // Log the wake EXECUTION — strap connectivity is the key unknown when an
         // alarm "fires but doesn't wake him" (haptic can't reach a dropped strap).
+        lastAlarmFireAt = Date()
         let canBuzz = self.peripheral != nil && self.cmdToStrap != nil
         self.evt("alarm_fired", "\(reasonLabel) canBuzz=\(canBuzz) hr=\(self.heartRate) batt=\(Int(self.battery))%")
         // Each ESCALATION pulse first checks he hasn't already woken from an
@@ -4382,6 +4434,10 @@ extension BLEManager: CBPeripheralDelegate {
     /// when nothing is actually firing.
     func stopAlarm(reason: String) {
         evt("alarm_stopped", "reason=\(reason)")
+        // Clear FIRST: isAlarmRinging must read false the moment this returns,
+        // or the next double tap 10s later reads as another alarm-stop instead
+        // of the quick-tag it is.
+        lastAlarmFireAt = nil
         cancelWakeHapticRamp()
         cancelAlarmBuzzChain(idPrefix: "lucid_smart_alarm")
         cancelFallbackAlarm()
