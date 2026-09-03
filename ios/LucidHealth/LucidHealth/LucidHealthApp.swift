@@ -17,6 +17,11 @@ extension Notification.Name {
     /// observes it and runs the strap-buzz actuator to actually wake him.
     /// Decoupled via NotificationCenter so the listener needs no BLEManager ref.
     static let lucidSmartWakeFire = Notification.Name("lucidSmartWakeFire")
+    /// Posted by AppDelegate's UNUserNotificationCenterDelegate when the user
+    /// taps the lock-screen "Stop Alarm" action (or the alarm notification
+    /// itself) on a LUCID_ALARM-category alert. BLEManager observes this and
+    /// kills every wake actuator — the kill switch the smart alarm never had.
+    static let lucidStopAlarm = Notification.Name("lucidStopAlarm")
 }
 
 @main
@@ -103,6 +108,24 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
             print("Notification permission: \(granted ? "granted" : "denied") \(error?.localizedDescription ?? "")")
         }
 
+        // "Stop Alarm" kill switch — the P0 fix. Every lock-screen alarm alert
+        // (local smart alarm, v154 server smart-wake, nightly fallback, go-back
+        // wake, smart-wake deadline backup) sets categoryIdentifier =
+        // "LUCID_ALARM" so this button always shows. Merge via
+        // getNotificationCategories so this never clobbers BiostateNotifier's
+        // categories (registered later, on first HR tick) and vice versa —
+        // mirrors the existing merge pattern in Services/BiostateNotifier.swift.
+        let stopAction = UNNotificationAction(
+            identifier: "STOP_ALARM", title: "Stop Alarm", options: [.destructive]
+        )
+        let alarmCategory = UNNotificationCategory(
+            identifier: "LUCID_ALARM", actions: [stopAction],
+            intentIdentifiers: [], options: []
+        )
+        center.getNotificationCategories { existing in
+            center.setNotificationCategories(existing.union([alarmCategory]))
+        }
+
         notificationListener.start()
         return true
     }
@@ -113,6 +136,33 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound, .list])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let content = response.notification.request.content
+        guard content.categoryIdentifier == "LUCID_ALARM",
+              response.actionIdentifier != UNNotificationDismissActionIdentifier else {
+            completionHandler()
+            return
+        }
+        // Any tap except a bare swipe-to-dismiss counts as "he's dealing with
+        // it" — both the destructive Stop Alarm button AND opening the app by
+        // tapping the banner kill the buzz.
+        NotificationCenter.default.post(
+            name: .lucidStopAlarm, object: nil,
+            userInfo: ["source": response.actionIdentifier]
+        )
+        // Hold the background execution window open past forceStopHaptics'
+        // own ~0.5s internal delay chain so the BLE stop packets actually get a
+        // chance to transmit before iOS can suspend the process again. Calling
+        // completionHandler() immediately risks the app being frozen mid-write.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            completionHandler()
+        }
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {

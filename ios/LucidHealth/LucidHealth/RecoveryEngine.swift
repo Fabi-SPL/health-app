@@ -10,8 +10,16 @@ import Foundation
 //     prior strain. Whoop's docs: "Recovery does not change over the day."
 //     Buchheit 2014 + Plews 2013: daytime HRV is contaminated by task-state
 //     (driving, work, walking suppress HRV by sympathetic activation), so it
-//     CANNOT drive a recovery score. Weights: HRV 40%, RHR 25%, Sleep 25%,
-//     Strain modifier -10%.
+//     CANNOT drive a recovery score.
+//   - CORRECTED 2026-09-03: the weights below were stale — three server
+//     rewrites out of date. The score itself has been server-computed since
+//     v102 (see computeRecovery() below); the ACTUAL live formula
+//     (supabase-migration-v153-health-audit-40-fixes.sql, compute_recovery_score)
+//     is: recovery = clamp(5, 100, 66 + (raw - 50) * 1.15), where
+//     raw = HRV_30d_percentile*0.55 + RHR_30d_percentile_inverted*0.30 +
+//     sleep_score_30d_percentile*0.15 (personal percentile rank, not a
+//     z-score sigmoid, and no strain modifier). This file no longer computes
+//     any local recovery estimate — see the removed debug block below.
 //   - Strain: cumulative HR zone-weighted load (Whoop model, 0–21 scale).
 //     Continuous, resets at midnight.
 //   - Body Battery: Firstbeat-style. Seeded at wake from recovery (NOT 100),
@@ -33,44 +41,27 @@ extension HealthEngine {
     ///   3. Locks the day so we don't refetch on every wake-up event
     ///   4. Seeds Body Battery from whatever recovery value is now present
     ///
-    /// Local debug contributions (HRV/RHR/Sleep) are still computed for the
-    /// stats overlay but are no longer authoritative.
+    /// REMOVED 2026-09-03: this used to also compute four local "debug"
+    /// HRV/RHR/Sleep/RR contribution values (a v100-era z-score sigmoid,
+    /// 40/25/25 weights) purely to feed HealthView's RecoveryBreakdownBar.
+    /// That bar has been deleted (HealthView.swift) because it was rendered
+    /// next to the real recovery ring, which shows the server's v153
+    /// percentile-rank score (55/30/15 weights) — two different formulas,
+    /// one falsely captioned as explaining the other. No true per-component
+    /// breakdown is available on-device (compute_recovery_score's percentile
+    /// terms are local plpgsql variables never returned by the RPC), so the
+    /// honest fix is no local estimate at all rather than a second wrong one.
+    /// recoveryHRVContribution/RHRContribution/SleepContribution/RRContribution
+    /// (declared in HealthEngine.swift, not owned by this file) are left
+    /// unused rather than removed — HealthEngine.swift is owned by another
+    /// agent on this branch.
     func computeRecovery() {
         let today = Calendar.current.startOfDay(for: Date())
         if let locked = recoveryLockedDate, Calendar.current.isDate(locked, inSameDayAs: today) {
             return
         }
 
-        // Debug-only HRV component for stats overlay
-        let sleepHRV = medianSleepRMSSD()
-        let hrvForCompute = sleepHRV > 0 ? sleepHRV : currentRMSSD
-        let hrvBaseline = baselineRMSSD.isEmpty ? baselineHRV : (baselineRMSSD.reduce(0, +) / Double(baselineRMSSD.count))
-        let hrvSD = baselineRMSSD.count >= 3 ? standardDev(baselineRMSSD) : max(hrvBaseline * 0.15, 5)
-        let hrvZ = hrvSD > 0 && hrvForCompute > 0 ? (hrvForCompute - hrvBaseline) / hrvSD : 0
-        let hrvComponent = hrvForCompute > 0 ? sigmoid(hrvZ) * 100 * 0.40 : 0
-
-        let restingHRForCompute: Double
-        if sleepingMinHR > 0 {
-            restingHRForCompute = sleepingMinHR
-        } else if !recentHR.isEmpty {
-            let sorted = recentHR.suffix(30).sorted()
-            restingHRForCompute = sorted[sorted.count / 2]
-        } else {
-            restingHRForCompute = baselineRHR
-        }
-        let rhrSD = max((calibration.p95RHR - calibration.p5RHR) / 4, 3)
-        let rhrZ = rhrSD > 0 ? (calibration.medianRHR - restingHRForCompute) / rhrSD : 0
-        let rhrComponent = sigmoid(rhrZ) * 100 * 0.25
-
-        let sleepComponent = (sleepScore > 0 ? sleepScore : 50) * 0.25
-
         DispatchQueue.main.async {
-            // Stats overlay debug values only — NOT the score
-            self.recoveryHRVContribution = round(hrvComponent * 10) / 10
-            self.recoveryRHRContribution = round(rhrComponent * 10) / 10
-            self.recoverySleepContribution = round(sleepComponent * 10) / 10
-            self.recoveryRRContribution = 0
-
             // The day is locked further down, only once the server recompute has
             // actually returned a value. Locking here meant a NULL result (called
             // mid-night, before a sleep window exists) silently kept yesterday's
@@ -120,15 +111,11 @@ extension HealthEngine {
         }
     }
 
-    /// Median of sleep-window RMSSD samples. Whoop uses last-SWS HRV; we use
-    /// the last hour of sleep (last 60 samples at 1/min). Median is more
-    /// robust than mean to artifacts at sleep onset / brief arousals.
-    private func medianSleepRMSSD() -> Double {
-        let samples = sleepPeriodRMSSDSamples.suffix(60)
-        guard !samples.isEmpty else { return 0 }
-        let sorted = samples.sorted()
-        return sorted[sorted.count / 2]
-    }
+    // medianSleepRMSSD() removed 2026-09-03 — it fed only the deleted local
+    // recovery-contribution estimate above. sleepPeriodRMSSDSamples itself is
+    // still collected (real side effect, cleared each computeRecovery() run)
+    // and may still be a dependency elsewhere in the sleep pipeline — left
+    // alone, not owned by this file.
 
     /// Fallback: if wake-up never fires by 14:00 local, compute recovery
     /// once from whatever data we have so the user doesn't see a stale value

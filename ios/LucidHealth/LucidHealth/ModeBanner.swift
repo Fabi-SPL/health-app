@@ -6,6 +6,8 @@ import SwiftUI
 struct ModeBanner: View {
     let mode: AppMode
     @ObservedObject var modeStore: AppModeStore
+    /// Runs the real wake-up (closes the sleep session + server recompute).
+    var onWake: () -> Void = {}
 
     var body: some View {
         switch mode {
@@ -31,7 +33,7 @@ struct ModeBanner: View {
                 .textCase(.uppercase)
                 .kerning(1.2)
 
-            Button(action: { DS.Haptic.commit(); modeStore.tapImAwake() }) {
+            Button(action: { DS.Haptic.commit(); modeStore.tapImAwake(); onWake() }) {
                 HStack(spacing: 12) {
                     Image(systemName: "sun.max.fill")
                         .font(.system(size: 22, weight: .semibold))

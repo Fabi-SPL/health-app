@@ -291,6 +291,15 @@ extension HealthEngine {
                 print("[WakeUp] Detected at \(wakeHour):00! \(previousStage.rawValue) → Awake")
 
                 if wakeHour >= 5 && wakeHour < 12 {
+                    // v-P1 post-wake-copy fix — stamp sleepEndTime directly instead
+                    // of relying solely on the callback consumer (BLEManager's
+                    // onWakeUpDetected closure) to do it as a side effect. That
+                    // worked only because BLEManager happens to be the sole
+                    // registered consumer today; this makes it an enforced
+                    // contract, not an implicit one, so every "keep sleeping /
+                    // wake at X" surface gated on sleepEndTime clears immediately
+                    // even if the callback registration is ever skipped/reordered.
+                    self.sleepEndTime = Date()
                     self.wakeUpCallback?()
 
                     var cal = Calendar.current
@@ -401,6 +410,30 @@ extension HealthEngine {
         } else {
             canTrigger = stageOK || (slopeOK && currentSleepStage != .deep)
         }
+
+        // MINIMUM-SLEEP FLOOR (v-P0 wake-timing fix) — mirrors the server v154
+        // invariant (floor_h = max(6.0h, 0.7 * target)); this local opportunistic
+        // trigger had NO duration guard at all before this, only a wall-clock
+        // window + stage/slope. Uses his own 30-night personal baseline
+        // (sleepHoursBaseline) when available so the floor is personalized, not
+        // a fixed number. Blocks ONLY this opportunistic trigger — the safety
+        // net below stays un-gated on purpose, same as the server's own
+        // backstop, so a real "up by X" deadline can never be silently
+        // swallowed by this floor.
+        let targetH = sleepHoursBaseline > 0 ? sleepHoursBaseline : 8.0
+        let minFloorHours = max(6.0, 0.7 * targetH)
+        let sleptHoursSoFar = sleepStartTime.map { now.timeIntervalSince($0) / 3600.0 } ?? 0
+        let floorMet = sleptHoursSoFar >= minFloorHours
+        if canTrigger && !floorMet {
+            debugSupabase?.pushDebugLog(
+                event: "smart_alarm_floor_blocked",
+                details: "{\"sleptH\":\(String(format: "%.2f", sleptHoursSoFar)),\"floorH\":\(String(format: "%.2f", minFloorHours)),\"stage\":\"\(currentSleepStage.rawValue)\"}",
+                tags: ["smart-alarm", "floor-guard"]
+            )
+            print("[SmartAlarm] Floor guard — \(String(format: "%.2f", sleptHoursSoFar))h slept < \(String(format: "%.2f", minFloorHours))h floor, holding")
+        }
+        canTrigger = canTrigger && floorMet
+
         // Alcohol mode: NO proactive smart-wake at all. He's always classified
         // "light", so any light-sleep trigger fires the instant the window opens
         // (that was the 9am buzz). On a recovery night only the humane noon
@@ -448,6 +481,20 @@ extension HealthEngine {
         smartAlarmTriggered = false
     }
 
+    /// v-P0 alarm-kill-switch fix — purely additive telemetry. Matches the
+    /// existing "smart_alarm_triggered" / "smart_alarm_safety_net" debugSupabase
+    /// events above so the debug stream shows a resolution for every trigger.
+    /// Called by BLEManager.stopAlarm(reason:) — the lock-screen "Stop Alarm"
+    /// kill switch — alongside its own `evt(...)` call on a different log
+    /// surface. Safe to call any time; does not affect alarm state itself.
+    func logAlarmStopped(reason: String) {
+        debugSupabase?.pushDebugLog(
+            event: "smart_alarm_stopped",
+            details: "{\"reason\":\"\(reason)\"}",
+            tags: ["smart-alarm", "stopped"]
+        )
+    }
+
     // MARK: - Sleep Session Tracking
 
     /// Call when sleep is first detected
@@ -491,6 +538,18 @@ extension HealthEngine {
         // Only meaningful while sleep is currently detected. Otherwise no-op.
         guard sleepDetected || sleepStartTime != nil else {
             print("[ManualWake] No sleep session active — ignored")
+            return
+        }
+        // Idempotency guard (v-P0 wake-lifecycle fix) — sleepDetected is cleared
+        // by this function but sleepStartTime is NOT (by design: only
+        // computeSleepScore(), via markSleepEnd()/gap-replay, resets it for the
+        // next night). Without this, a stray second call — a re-tap race, or a
+        // future extra call site — passes the guard above on sleepStartTime
+        // alone and re-fires the server recompute RPC + re-stamps
+        // wakeUpLockUntil. Session already closed this cycle == sleepEndTime
+        // stamped and sleepDetected already false.
+        if sleepEndTime != nil && !sleepDetected {
+            print("[ManualWake] Session already closed — ignored")
             return
         }
         print("[ManualWake] User tapped I'm awake — forcing wake-up")
