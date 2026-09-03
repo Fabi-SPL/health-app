@@ -131,8 +131,10 @@ struct HealthView: View {
             }
             .padding(.horizontal, DS.Spacing.md)
 
-            // Ring (focal) + contribution breakdown beside it — distinct format
-            // from the battery gauge above. The 4-factor bar shows what built the score.
+            // Ring (focal) + status chip beside it — distinct format from the
+            // battery gauge above. No per-factor breakdown here (removed
+            // 2026-09-03, see comment below) — the ring shows the server's
+            // real recovery score with nothing beside it claiming to explain it.
             HStack(alignment: .center, spacing: DS.Spacing.lg) {
                 ScoreRing(
                     score: engine.recoveryScore,
@@ -148,19 +150,17 @@ struct HealthView: View {
                         style: engine.recoveryScore >= 67 ? .teal : (engine.recoveryScore >= 34 ? .amber : .danger)
                     )
 
-                    RecoveryBreakdownBar(
-                        hrv: engine.recoveryHRVContribution,
-                        rhr: engine.recoveryRHRContribution,
-                        sleep: engine.recoverySleepContribution,
-                        rr: engine.recoveryRRContribution
-                    )
-
-                    HStack(spacing: DS.Spacing.sm) {
-                        legendItem(color: DS.Colors.teal, label: "HRV", value: Int(engine.recoveryHRVContribution * 100))
-                        legendItem(color: DS.Colors.pink, label: "RHR", value: Int(engine.recoveryRHRContribution * 100))
-                        legendItem(color: DS.Colors.violet, label: "Sleep", value: Int(engine.recoverySleepContribution * 100))
-                        legendItem(color: DS.Colors.amber, label: "RR", value: Int(engine.recoveryRRContribution * 100))
-                    }
+                    // RecoveryBreakdownBar + legend removed (2026-09-03): was fed by
+                    // RecoveryEngine.swift's local v100 sigmoid estimate (40/25/25 HRV/
+                    // RHR/Sleep weights) while the ring beside it shows the server's
+                    // live v153 percentile-rank score (55/30/15 weights, different
+                    // methodology entirely). The bar misexplained the real number every
+                    // time. No true per-component breakdown is available on-device —
+                    // compute_recovery_score's percentile terms (hrv_pct/rhr_pct_inv/
+                    // s_score) are local plpgsql variables, never returned by the
+                    // recompute_health_metrics RPC or stored on health_metrics — so a
+                    // missing bar stands in for a lying one until the server actually
+                    // returns real contributions. See health-recon/06-score-truth-audit.md §5.1.
                 }
             }
             .padding(DS.Spacing.lg)
@@ -169,7 +169,7 @@ struct HealthView: View {
 
             // 14-day recovery trend (moved off Today's hero zone) — makes the
             // genuinely 9-100 swinging score's movement visible beside the
-            // breakdown that explains it.
+            // ring it belongs to.
             if recoveryTrend.count >= 3 {
                 RecoveryTrendStrip(scores: recoveryTrend)
                     .padding(DS.Spacing.md)

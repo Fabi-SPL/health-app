@@ -191,6 +191,7 @@ class NotificationListener {
             // person; the strap-buzz actuator (posted below) is the real wake.
             content.sound = .defaultCritical
             content.interruptionLevel = .critical
+            content.categoryIdentifier = "LUCID_ALARM"
             var info: [String: Any] = ["nudge_id": nudge.id, "source": "lucid-smart-wake"]
             if let sid = nudge.sessionId { info["session_id"] = sid }
             if let reason = nudge.reason { info["reason"] = reason }

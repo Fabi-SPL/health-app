@@ -703,11 +703,15 @@ class SupabaseClient {
     /// "I'm awake" (manual or auto). Postgres reads realtime_health, runs the
     /// authoritative algorithms, writes health_metrics, returns the row.
     ///
-    /// Returns the freshly-computed (recoveryScore, sleepScore, sleepHours) on
-    /// success — caller updates HealthEngine @Published vars from these so UI
-    /// reflects the server's truth instead of stale local state.
+    /// Returns the freshly-computed (recoveryScore, sleepScore, sleepHours,
+    /// deepMin, remMin, lightMin, awakeMin) on success — caller updates
+    /// HealthEngine @Published vars from these so UI reflects the server's
+    /// truth instead of stale local state. The four stage-minute fields were
+    /// added because v176's server classifier is the only correct one — see
+    /// applyServerRecompute in HealthEngine.swift for why they must overwrite
+    /// stageMinutes instead of being dropped on the floor.
     @discardableResult
-    func recomputeHealthMetrics(date: Date = Date()) async -> (recovery: Double, sleepScore: Double, sleepHours: Double)? {
+    func recomputeHealthMetrics(date: Date = Date()) async -> (recovery: Double, sleepScore: Double, sleepHours: Double, deepMin: Double, remMin: Double, lightMin: Double, awakeMin: Double)? {
         do {
             try await ensureAuth()
             guard let token = accessToken else { return nil }
@@ -747,11 +751,20 @@ class SupabaseClient {
             }
             guard let row = parsed else { return nil }
 
-            let recovery   = (row["recovery_score"] as? NSNumber)?.doubleValue ?? 0
-            let sleepScore = (row["sleep_score"]    as? NSNumber)?.doubleValue ?? 0
-            let sleepHours = (row["sleep_hours"]    as? NSNumber)?.doubleValue ?? 0
-            log("recompute_health_metrics → recovery=\(Int(recovery)) sleepScore=\(Int(sleepScore)) sleepHours=\(sleepHours)")
-            return (recovery, sleepScore, sleepHours)
+            let recovery   = (row["recovery_score"]  as? NSNumber)?.doubleValue ?? 0
+            let sleepScore = (row["sleep_score"]     as? NSNumber)?.doubleValue ?? 0
+            let sleepHours = (row["sleep_hours"]      as? NSNumber)?.doubleValue ?? 0
+            // v176 already computes correct stage minutes server-side (13-23%
+            // deep, 20-32% REM, validated over 30 real nights) — these four
+            // fields used to be parsed into `row` and then discarded, which is
+            // why the wake-up UI kept showing the on-device classifier's
+            // degenerate ~99%-light numbers instead of server truth.
+            let deepMin    = (row["deep_sleep_min"]  as? NSNumber)?.doubleValue ?? 0
+            let remMin     = (row["rem_sleep_min"]   as? NSNumber)?.doubleValue ?? 0
+            let lightMin   = (row["light_sleep_min"] as? NSNumber)?.doubleValue ?? 0
+            let awakeMin   = (row["awake_min"]       as? NSNumber)?.doubleValue ?? 0
+            log("recompute_health_metrics → recovery=\(Int(recovery)) sleepScore=\(Int(sleepScore)) sleepHours=\(sleepHours) D=\(Int(deepMin)) R=\(Int(remMin)) L=\(Int(lightMin)) A=\(Int(awakeMin))")
+            return (recovery, sleepScore, sleepHours, deepMin, remMin, lightMin, awakeMin)
         } catch {
             log("recompute_health_metrics error: \(error.localizedDescription)")
             return nil

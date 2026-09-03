@@ -45,6 +45,14 @@ class HealthEngine: ObservableObject {
     @Published var sleepEfficiency: Double = 0
     @Published var sleepConsistencyScore: Double = 50
     @Published var wakeUpNotified: Bool = false
+    /// True when the most recent server-provided stage split (deep/rem/light/
+    /// awake, from recompute_health_metrics) looked physiologically degenerate
+    /// — set in applyServerRecompute. No UI reads this yet (stage-display
+    /// views are out of scope for this pass); it exists so a badge can be
+    /// wired up later without re-deriving the check. Not a new statistic —
+    /// same "light > 90%, deep/rem ~0" signature already used to describe the
+    /// on-device classifier's collapse.
+    @Published var stageSplitLowConfidence: Bool = false
 
     // Recovery
     @Published var recoveryScore: Double = 0
@@ -1077,7 +1085,7 @@ class HealthEngine: ObservableObject {
     /// main queue. Every call site used to wire recovery and sleepScore up by
     /// hand and drop sleepHours on the floor, which is how the sleep card stayed
     /// frozen at a stale value after a correct server recompute.
-    func applyServerRecompute(_ result: (recovery: Double, sleepScore: Double, sleepHours: Double)) {
+    func applyServerRecompute(_ result: (recovery: Double, sleepScore: Double, sleepHours: Double, deepMin: Double, remMin: Double, lightMin: Double, awakeMin: Double)) {
         // 0 is a valid recovery score (alcohol night, burnout). Only nil is no-data,
         // and the caller's `if let` has already handled that.
         if result.recovery >= 0 {
@@ -1089,6 +1097,32 @@ class HealthEngine: ObservableObject {
         }
         if result.sleepScore > 0 { sleepScore = round(result.sleepScore) }
         if result.sleepHours > 0 { sleepDurationHours = round(result.sleepHours * 10) / 10 }
+        // v-fix: server is authoritative for stage minutes since v176 — the
+        // on-device live accumulator (SleepEngine.detectSleepStage) is a
+        // real-time approximation only, and its ".light" fallback under
+        // sparse-RR / low-RHR physiology should never be what the post-wake
+        // UI shows once the server has a real answer. Was previously parsed
+        // into `row` in SupabaseClient.recomputeHealthMetrics and discarded —
+        // this is the one place it's applied, mirroring the same assignment
+        // fetchBaseline already does correctly (above, restoreStageMinutesIfNeeded path).
+        if result.deepMin > 0 || result.remMin > 0 || result.lightMin > 0 || result.awakeMin > 0 {
+            stageMinutes[.deep]  = result.deepMin
+            stageMinutes[.rem]   = result.remMin
+            stageMinutes[.light] = result.lightMin
+            stageMinutes[.awake] = result.awakeMin
+            // Plausibility guard (nothing validated this split before): flag,
+            // don't discard — the server's v176 classifier is validated
+            // against 30 real nights and a genuinely low/zero deep or REM
+            // night is possible; this is a signal for a future "low
+            // confidence" badge, not a reason to hide real server data.
+            let total = result.deepMin + result.remMin + result.lightMin + result.awakeMin
+            if total > 0 {
+                let lightFrac = result.lightMin / total
+                let deepFrac  = result.deepMin / total
+                let remFrac   = result.remMin / total
+                stageSplitLowConfidence = lightFrac > 0.90 && deepFrac < 0.02 && remFrac < 0.02
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════

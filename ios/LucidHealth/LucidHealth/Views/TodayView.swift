@@ -291,7 +291,7 @@ struct TodayView: View {
                 // sleep still open when HR-driven wake detection misses Fabi's
                 // chronic-low baseline. Hidden in .morning, where ModeBanner
                 // already carries the big I'm-awake CTA.
-                if canManualWake && modeStore.current != .morning {
+                if canManualWake && modeStore.current != .morning && modeStore.current != .justWokeUp {
                     Button {
                         DS.Haptic.success()
                         engine.manualWakeUp()
@@ -317,7 +317,7 @@ struct TodayView: View {
 
                 // Morning: mode banner (I'm-awake CTA) + last-night ribbon + wake coach.
                 if modeStore.current == .justWokeUp || modeStore.current == .morning {
-                    ModeBanner(mode: modeStore.current, modeStore: modeStore)
+                    ModeBanner(mode: modeStore.current, modeStore: modeStore, onWake: { engine.manualWakeUp() })
                         .padding(.top, DS.Spacing.sm)
                         .opacity(appeared ? 1 : 0)
                         .animation(DS.Anim.cardAppear, value: appeared)
