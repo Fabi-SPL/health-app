@@ -4,6 +4,10 @@
 <dict>
 	<key>CFBundleDisplayName</key>
 	<string>Lucid Health</string>
+	<!-- No non-exempt encryption. Without this key TestFlight blocks every
+	     build behind a manual export-compliance answer in the web UI. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>

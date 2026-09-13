@@ -1,0 +1,218 @@
+name: TestFlight LucidHealth
+
+# Replaces the AltStore/Sideloadly path. A real signed archive, uploaded to
+# App Store Connect, installed on the phone through the TestFlight app. No
+# 7-day certificate expiry, no re-sign cycle, no "untrusted developer" screen.
+#
+# Needs three repo secrets (see the guard step below). Until they exist this
+# workflow skips cleanly instead of going red on every push.
+
+on:
+  push:
+    paths:
+      - 'ios/LucidHealth/**'
+  workflow_dispatch:
+
+jobs:
+  testflight:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # build number is derived from commit count
+
+      - name: Guard - are the App Store Connect secrets present?
+        id: guard
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          MISSING=""
+          for NAME in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8 APPLE_TEAM_ID; do
+            eval "VALUE=\${$NAME}"
+            [ -n "$VALUE" ] || MISSING="$MISSING $NAME"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::notice::TestFlight upload skipped - missing secret(s):$MISSING"
+            echo "ready=false" >> $GITHUB_OUTPUT
+          else
+            echo "ready=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Require the injected app secrets too
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          EE_TASKS_EMAIL: ${{ secrets.EE_TASKS_EMAIL }}
+          EE_TASKS_PASSWORD: ${{ secrets.EE_TASKS_PASSWORD }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          HERMES_USER_ID: ${{ secrets.HERMES_USER_ID }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+        run: |
+          MISSING=""
+          for NAME in EE_TASKS_EMAIL EE_TASKS_PASSWORD SUPABASE_ANON_KEY HERMES_USER_ID SUPABASE_URL; do
+            eval "VALUE=\${$NAME}"
+            [ -n "$VALUE" ] || MISSING="$MISSING $NAME"
+          done
+          [ -z "$MISSING" ] || { echo "ERROR: missing:$MISSING"; exit 1; }
+
+      # TestFlight groups builds under one version string. Unlike the AltStore
+      # path (which made a new 1.0.N "version" per build), MARKETING_VERSION
+      # stays fixed and the build number carries the increment - that is the
+      # model App Store Connect actually expects.
+      - name: Derive build number
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          SUPABASE_STORAGE_PUBLIC_BASE: ${{ vars.SUPABASE_STORAGE_PUBLIC_BASE }}
+        run: |
+          COMMITS=$(git rev-list --count HEAD)
+          SRC="${SUPABASE_STORAGE_PUBLIC_BASE}/altstore-source.json"
+          JQ='[.apps[] | select(.bundleIdentifier == "com.fabi.lucidhealth") | .buildVersion | tonumber] | first // 0'
+          PUBLISHED=$(curl -fsS --max-time 20 "$SRC" | jq -r "$JQ") || PUBLISHED=0
+          case "$PUBLISHED" in ''|*[!0-9]*) PUBLISHED=0 ;; esac
+          if [ "$COMMITS" -gt "$PUBLISHED" ]; then BUILD_NUM=$COMMITS; else BUILD_NUM=$((PUBLISHED + 1)); fi
+          echo "BUILD_NUM=${BUILD_NUM}" >> $GITHUB_ENV
+          echo "commits=${COMMITS} published=${PUBLISHED} -> build ${BUILD_NUM}"
+
+      - name: Select latest Xcode
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      # xcodebuild wants an absolute path; altool looks in a fixed set of
+      # directories. Write it to both so neither has to be told twice.
+      - name: Install the App Store Connect API key
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p ~/private_keys ~/.appstoreconnect/private_keys
+          printf '%s' "$ASC_KEY_P8" > ~/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          cp ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 ~/.appstoreconnect/private_keys/
+          chmod 600 ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          head -1 ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 | grep -q "BEGIN PRIVATE KEY" \
+            || { echo "ERROR: ASC_KEY_P8 is not a PEM private key. Paste the whole .p8 file including the BEGIN/END lines."; exit 1; }
+          echo "Key installed."
+
+      - name: Inject auth credentials + Supabase config
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          sed -i '' 's|static let prefilledEmail: String = "BUILD_EMAIL"|static let prefilledEmail: String = "${{ secrets.EE_TASKS_EMAIL }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          sed -i '' 's|static let prefilledPassword: String = "BUILD_PASSWORD"|static let prefilledPassword: String = "${{ secrets.EE_TASKS_PASSWORD }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          sed -i '' 's|"BUILD_SUPABASE_URL"|"${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          sed -i '' 's|"BUILD_ANON_KEY"|"${{ secrets.SUPABASE_ANON_KEY }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          sed -i '' 's|"BUILD_USER_ID"|"${{ secrets.HERMES_USER_ID }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          grep -E 'prefilledEmail|prefilledPassword|baseURL|anonKey|let userId' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift | sed 's/= ".*"/= "***"/' | head -8
+
+      - name: Inject commit SHA + build date
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          BUILD_INFO=ios/LucidHealth/LucidHealth/BuildInfo.swift
+          sed -i '' "s|static let commitHash: String = \"local-dev\"|static let commitHash: String = \"${GITHUB_SHA}\"|" "$BUILD_INFO"
+          sed -i '' "s|static let buildDate:  String = \"unknown\"|static let buildDate:  String = \"${BUILD_DATE}\"|" "$BUILD_INFO"
+
+      # The team ID lives in a secret, not in the repo - this repo is public.
+      - name: Stamp team ID into ExportOptions.plist
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          sed -i '' "s|__TEAM_ID__|${APPLE_TEAM_ID}|" ios/LucidHealth/ExportOptions.plist
+          cat ios/LucidHealth/ExportOptions.plist
+
+      # -allowProvisioningUpdates lets Xcode create the App IDs and signing
+      # certificates on the portal by itself, using the API key. It does NOT
+      # create the App Group - that one identifier has to exist already or the
+      # widget target fails to sign.
+      - name: Archive (signed, automatic provisioning)
+        if: steps.guard.outputs.ready == 'true'
+        working-directory: ios/LucidHealth
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project LucidHealth.xcodeproj \
+            -scheme LucidHealth \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -archivePath $RUNNER_TEMP/LucidHealth.xcarchive \
+            -derivedDataPath $RUNNER_TEMP/DerivedData \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID "${ASC_KEY_ID}" \
+            -authenticationKeyIssuerID "${ASC_ISSUER_ID}" \
+            DEVELOPMENT_TEAM="${APPLE_TEAM_ID}" \
+            CODE_SIGN_STYLE=Automatic \
+            ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS=NO \
+            SWIFT_VERSION=5.0 \
+            CURRENT_PROJECT_VERSION=${BUILD_NUM} \
+            MARKETING_VERSION=1.0 \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO EXCLUDED_ARCHS=x86_64 SUPPORTS_MACCATALYST=NO \
+            -skipPackagePluginValidation -skipMacroValidation \
+            2>&1 | tee archive.log
+          echo "--- archive done ---"
+
+      - name: Verify entitlements survived real signing
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          APP="$RUNNER_TEMP/LucidHealth.xcarchive/Products/Applications/LucidHealth.app"
+          echo "=== main app ==="; codesign -d --entitlements - "$APP" 2>&1 | tee /tmp/main-ent.txt
+          grep -q "application-groups" /tmp/main-ent.txt || { echo "ERROR: app groups missing"; exit 1; }
+          echo "=== widget ==="; codesign -d --entitlements - "$APP/PlugIns/LucidHealthWidgets.appex" 2>&1 | tee /tmp/w-ent.txt
+          grep -q "application-groups" /tmp/w-ent.txt || { echo "ERROR: widget app groups missing"; exit 1; }
+
+      - name: Export signed IPA
+        if: steps.guard.outputs.ready == 'true'
+        working-directory: ios/LucidHealth
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild -exportArchive \
+            -archivePath $RUNNER_TEMP/LucidHealth.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath $RUNNER_TEMP/export \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath ~/private_keys/AuthKey_${ASC_KEY_ID}.p8 \
+            -authenticationKeyID "${ASC_KEY_ID}" \
+            -authenticationKeyIssuerID "${ASC_ISSUER_ID}" \
+            2>&1 | tee export.log
+          ls -la $RUNNER_TEMP/export
+
+      - name: Upload to TestFlight
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          IPA=$(find $RUNNER_TEMP/export -name "*.ipa" | head -1)
+          [ -n "$IPA" ] || { echo "ERROR: no IPA exported"; exit 1; }
+          echo "Uploading $IPA (build ${BUILD_NUM})"
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "${ASC_KEY_ID}" --apiIssuer "${ASC_ISSUER_ID}"
+          echo "Uploaded. Apple processes it in 5-30 min, then it appears in TestFlight."
+
+      - name: Keep the IPA as an artifact
+        if: steps.guard.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: LucidHealth-testflight-${{ env.BUILD_NUM }}
+          path: ${{ runner.temp }}/export/*.ipa
+          retention-days: 14
