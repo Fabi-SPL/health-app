@@ -5,6 +5,9 @@
 .mcp.json
 *.pem
 *.p12
+*.p8
+AuthKey_*
+ExportOptions.local.plist
 *.cer
 *.mobileprovision
 
