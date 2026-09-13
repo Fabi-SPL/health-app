@@ -509,15 +509,15 @@ class BLEManager: NSObject, ObservableObject {
             self.bleQueue.asyncAfter(deadline: .now() + 0.5) { self.forceStopHaptics() }
         }
 
-        // Wake-up detection callback — notify Lucid for morning briefing
+        // Wake-up detection callback — notify Health for morning briefing
         healthEngine.onWakeUpDetected { [weak self] in
             guard let self = self else { return }
-            self.log("WAKE-UP DETECTED — notifying Lucid for morning briefing")
+            self.log("WAKE-UP DETECTED — notifying Health for morning briefing")
             // Gentle buzz to confirm wake-up detected
             self.runHapticPattern(0)
             // Notify Supabase so the health engine can compute morning briefing
             self.supabase.notifyWakeUp { success in
-                self.log("Wake-up notification to Lucid: \(success ? "OK" : "FAILED")")
+                self.log("Wake-up notification to Health: \(success ? "OK" : "FAILED")")
             }
             // v111 (2026-05-27) — Alcohol detection moved server-side.
             // Postgres `detect_overnight_alcohol()` RPC runs in v106 sleep
@@ -2435,7 +2435,7 @@ extension BLEManager: CBCentralManagerDelegate {
             log("Bluetooth OFF")
             DispatchQueue.main.async { self.connectionState = .disconnected }
         case .unauthorized:
-            log("Bluetooth UNAUTHORIZED - check Settings > Lucid Bridge > Bluetooth")
+            log("Bluetooth UNAUTHORIZED - check Settings > Bridge > Bluetooth")
         case .unsupported:
             log("Bluetooth not supported on this device")
         case .resetting:
@@ -3483,7 +3483,7 @@ extension BLEManager: CBPeripheralDelegate {
         pendingTapTimestamp = now
 
         // Double-tap NEVER auto-logs. It captures the moment, arms the quick-select
-        // sheet, and fires a notification — tap the notification (or open Lucid) to
+        // sheet, and fires a notification — tap the notification (or open Health) to
         // pick what happened. Removed the old "zero-tap auto-log your #1 item"
         // behavior: it logged an espresso on every single tap. (Fabi, Jun 2026)
         DispatchQueue.main.async {
@@ -3492,7 +3492,7 @@ extension BLEManager: CBPeripheralDelegate {
             self.showDoubleTapSheet = true
             self.sendQuickTagNotification(
                 title: "Double tap captured",
-                body: "Open Lucid to tag what just happened."
+                body: "Open Health to tag what just happened."
             )
         }
     }
@@ -3563,7 +3563,7 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 
-    /// Log a free-text custom event — Lucid auto-categorizes with emoji + type
+    /// Log a free-text custom event — Health auto-categorizes with emoji + type
     func logCustomEvent(note: String) {
         let tapTime = pendingTapTimestamp ?? Date()
         pendingTapTimestamp = nil
@@ -3616,7 +3616,7 @@ extension BLEManager: CBPeripheralDelegate {
 
     /// Mirror intake events into food_entries so they show up in the Food tab.
     /// Type drives default kcal/NOVA/flags. Freeform name is preserved verbatim
-    /// — Lucid AI canonicalizes server-side.
+    /// — the server canonicalizes server-side.
     private func mirrorIntakeToFoodEntries(name: String, at: Date, type: String) async {
         let isAlcohol = (type == "alcohol")
         let isSupplement = (type == "supplement")
@@ -4493,7 +4493,7 @@ extension BLEManager: CBPeripheralDelegate {
             self.healthEngine.wakeUpLockUntil = tonight9pm
         }
         self.supabase.notifyWakeUp { success in
-            self.log("v154 wake-up notification to Lucid: \(success ? "OK" : "FAILED")")
+            self.log("v154 wake-up notification to Health: \(success ? "OK" : "FAILED")")
         }
         Task { [weak self] in
             guard let self = self else { return }

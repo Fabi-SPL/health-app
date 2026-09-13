@@ -1068,7 +1068,7 @@ private struct PersonalizationCard: View {
             profileRow(label: "Age",    text: $ageText,    unit: "yrs", placeholder: "20")
 
             // Sex is a real control now — it was a footnote telling you to ask
-            // Lucid to change it. Feeds the BMR sex term + server profile.
+            // Health to change it. Feeds the BMR sex term + server profile.
             HStack {
                 Text("Sex")
                     .font(.system(size: 13, weight: .medium))

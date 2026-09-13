@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>Lucid Health</string>
+	<string>Health</string>
 	<!-- No non-exempt encryption. Without this key TestFlight blocks every
 	     build behind a manual export-compliance answer in the web UI. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
@@ -26,20 +26,20 @@
 	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Lucid Health streams heart rate, HRV, and recovery data from your Whoop strap.</string>
+	<string>Health streams heart rate, HRV, and recovery data from your Whoop strap.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>Lucid Health needs Bluetooth to connect to your Whoop strap.</string>
+	<string>Health needs Bluetooth to connect to your Whoop strap.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos of meals and scan barcodes to log food.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Pick existing meal photos to log.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>Lucid Health reads step count to improve illness detection accuracy.</string>
+	<string>Health reads step count to improve illness detection accuracy.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>Lucid Health writes recovery and strain scores to Apple Health.</string>
+	<string>Health writes recovery and strain scores to Apple Health.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Lucid Health tracks altitude during ski and outdoor sessions.</string>
+	<string>Health tracks altitude during ski and outdoor sessions.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Lucid Health tracks altitude continuously during outdoor sessions.</string>
+	<string>Health tracks altitude continuously during outdoor sessions.</string>
 </dict>
 </plist>

@@ -227,7 +227,7 @@ struct SmallWidgetView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("\(energyEmoji(entry.data)) Lucid")
+                    Text("\(energyEmoji(entry.data)) Health")
                         .font(.system(size: 13, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                     Text(coachLine(entry.data))
@@ -463,7 +463,7 @@ struct LucidSmallWidget: Widget {
         StaticConfiguration(kind: kind, provider: HealthDataProvider()) { entry in
             SmallWidgetView(entry: entry)
         }
-        .configurationDisplayName("Lucid Recovery")
+        .configurationDisplayName("Recovery")
         .description("Strong-glance recovery, battery, and live bridge state.")
         .supportedFamilies([.systemSmall])
     }
@@ -476,7 +476,7 @@ struct LucidMediumWidget: Widget {
         StaticConfiguration(kind: kind, provider: HealthDataProvider()) { entry in
             MediumWidgetView(entry: entry)
         }
-        .configurationDisplayName("Lucid Canvas")
+        .configurationDisplayName("Canvas")
         .description("A one-glance body canvas for recovery, load, and focus state.")
         .supportedFamilies([.systemMedium])
     }
@@ -778,7 +778,7 @@ struct LucidLiveHRWidget: Widget {
 // MARK: - Control Center: Bridge Open (iOS 18+)
 
 /// Control Center / Lock Screen / Action Button widget. Tapping it opens the
-/// Lucid Bridge app directly to the Bridge (Console) tab so Fabi can check
+/// Bridge app directly to the Bridge (Console) tab so Fabi can check
 /// connection state with one tap. Not a true reconnect toggle (BLE start/stop
 /// from a Control intent has background/entitlement constraints) — but the
 /// Action Button assignment is the killer use.
@@ -787,18 +787,18 @@ struct LucidBridgeControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "LucidBridgeControl") {
             ControlWidgetButton(action: OpenBridgeIntent()) {
-                Label("Lucid Bridge", systemImage: "antenna.radiowaves.left.and.right")
+                Label("Bridge", systemImage: "antenna.radiowaves.left.and.right")
             }
         }
-        .displayName("Lucid Bridge")
+        .displayName("Bridge")
         .description("One-tap open Bridge — assign to Action Button or Control Center.")
     }
 }
 
 @available(iOS 18.0, *)
 struct OpenBridgeIntent: AppIntent {
-    static var title: LocalizedStringResource = "Open Lucid Bridge"
-    static var description = IntentDescription("Opens the Lucid Bridge app to the connection page.")
+    static var title: LocalizedStringResource = "Open Bridge"
+    static var description = IntentDescription("Opens the Bridge app to the connection page.")
     static var openAppWhenRun: Bool = true
 
     func perform() async throws -> some IntentResult {

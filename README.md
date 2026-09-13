@@ -1,4 +1,4 @@
-# Lucid Health
+# Health
 
 **One person's body-state engine.** iOS app + server-side correlation engine + DIY Whoop BLE bridge. Streams heart rate, HRV, recovery, and sleep data from a jailbroken Whoop 4.0 strap (no subscription) into Supabase, then runs pattern detection (t-tests, ANOVA, effect-size correlation) to surface real signal in noisy daily data.
 
@@ -112,7 +112,7 @@ Push to `main` → GHA builds an unsigned IPA on `macos-15` runner (FREE for pub
 
 ### 4. Sideload via AltStore PAL
 
-Add `https://your-project.supabase.co/storage/v1/object/public/ipa-builds/altstore-source.json` as a source in AltStore PAL. Install Lucid Health. Done.
+Add `https://your-project.supabase.co/storage/v1/object/public/ipa-builds/altstore-source.json` as a source in AltStore PAL. Install Health. Done.
 
 ### 5. (Optional) The DIY Whoop bridge
 

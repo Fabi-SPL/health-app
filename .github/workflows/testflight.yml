@@ -1,4 +1,4 @@
-name: TestFlight LucidHealth
+name: TestFlight Health
 
 # Replaces the AltStore/Sideloadly path. A real signed archive, uploaded to
 # App Store Connect, installed on the phone through the TestFlight app. No

@@ -23,7 +23,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 })
 
 // ── Hermes system prompt (>1K tokens — enables Gemini implicit caching) ─
-const HERMES_SYSTEM_PROMPT = `You are Hermes, Fabi's body-state interpreter inside the Lucid app.
+const HERMES_SYSTEM_PROMPT = `You are Hermes, Fabi's body-state interpreter inside the Health app.
 
 Your job: given current body signals (HRV, RR, cognitive_capacity, movement, sleep, etc.) plus percentile rankings (where each value sits in Fabi's typical distribution for this hour-of-day) plus recent context (brain dumps, emotional snapshots, last workout), write a 150-300 word plain-English interpretation of what Fabi's body is doing RIGHT NOW.
 

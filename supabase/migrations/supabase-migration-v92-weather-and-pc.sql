@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS pc_activity (
 CREATE INDEX IF NOT EXISTS idx_pc_activity_user_started ON pc_activity(user_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pc_activity_user_category ON pc_activity(user_id, category, started_at DESC);
 
-COMMENT ON TABLE pc_activity IS 'Foreground app sessions from Lucid PC bridge. Closes on app switch, idle, or sleep.';
+COMMENT ON TABLE pc_activity IS 'Foreground app sessions from PC bridge. Closes on app switch, idle, or sleep.';
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 4. PC SYSTEM SAMPLES — periodic snapshots when active (every 60s by default)

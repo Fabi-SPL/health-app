@@ -180,7 +180,7 @@ struct ManualFoodEntrySheet: View {
         VStack(alignment: .leading, spacing: DS.Spacing.xs) {
             sectionLabel("How big a portion?")
             PortionSizePicker(selection: $portion)
-            Text("Normal = your usual amount. Lucid learns what that means for your body over time.")
+            Text("Normal = your usual amount. Health learns what that means for your body over time.")
                 .font(.system(size: 10))
                 .foregroundStyle(DS.Colors.textMuted)
         }

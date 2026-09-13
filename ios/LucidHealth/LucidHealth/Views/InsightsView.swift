@@ -75,7 +75,7 @@ struct InsightsView: View {
                             .opacity(appeared ? 1 : 0)
                             .animation(DS.Anim.stagger(index: 4), value: appeared)
 
-                        // 5b — Cross-domain connections (Lucid computed + Gemini).
+                        // 5b — Cross-domain connections (Health computed + Gemini).
                         if !crossDomain.isEmpty {
                             sectionLabel("ACROSS DOMAINS")
                             ForEach(Array(crossDomain.enumerated()), id: \.element.id) { i, p in

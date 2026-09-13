@@ -345,7 +345,7 @@ struct SpiralAlertsLogCard: View {
                            style: (loaded && alerts.isEmpty) ? .amber : .violet)
             }
 
-            Text("Mini-Lucid pings when HRV crashes 20%+ and HR rises 15%+ for ≥10 min. Cooldown 4h.")
+            Text("The watcher pings when HRV crashes 20%+ and HR rises 15%+ for ≥10 min. Cooldown 4h.")
                 .font(.system(size: 11, design: .rounded))
                 .foregroundStyle(DS.Colors.textSecondary)
 

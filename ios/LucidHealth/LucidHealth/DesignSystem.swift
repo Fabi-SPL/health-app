@@ -1,7 +1,7 @@
 import SwiftUI
 
 // ════════════════════════════════════════════════════════════
-// Lucid Design System — single source of truth for all UI
+// Design System — single source of truth for all UI
 // Canon: AURORA-DESIGN-SPEC.md (LOCKED 2026-06-24) + the four approved mockups
 //
 // The 5 Aurora laws:
@@ -39,7 +39,7 @@ enum DS {
         static let pill: CGFloat = 100
     }
 
-    // MARK: - Colors (Lucid Brand — adaptive light/dark)
+    // MARK: - Colors (Brand — adaptive light/dark)
     enum Colors {
         // Backgrounds
         static let bg = Color(UIColor { tc in
@@ -794,7 +794,7 @@ struct EmptyGlassState: View {
 
 // MARK: - Two-Tone Headline
 
-/// Two-tone typographic headline per Lucid Design Bundle principle 1.
+/// Two-tone typographic headline per Design Bundle principle 1.
 /// Bold primary half locks the eye in 0.3s, muted secondary half adds context
 /// without competing. Same font, same size, different weight + color.
 struct TwoToneHeadline: View {

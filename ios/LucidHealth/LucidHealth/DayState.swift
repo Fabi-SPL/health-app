@@ -138,7 +138,7 @@ struct DayStateResolver {
         }
 
         // 4. Soft — 3+ consecutive days of low HRV signals long-term deficit.
-        //    Manual toggle (Lucid PWA's Soft Day) also lands here via override.
+        //    Manual toggle (the web app's Soft Day) also lands here via override.
         if engine.consecutiveLowHRVDays >= 3 {
             return .soft
         }

@@ -31,7 +31,7 @@ begin
     values
       (new.id, new.user_id,
        coalesce(new.metadata->>'type', new.source, 'hub'),
-       coalesce(new.title, 'Lucid'),
+       coalesce(new.title, 'Health'),
        coalesce(new.message, ''),
        new.metadata->>'briefing',
        new.priority,

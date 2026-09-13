@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Unified discovery card — the ONE card language for every insight system
-/// (Lucid-computed patterns, Gemini cross-domain, featured discovery).
+/// (Health-computed patterns, Gemini cross-domain, featured discovery).
 /// Grammar: provenance badge + signed-delta badge → headline → mini-visual
 /// (comparison bars or strength meter, never prose) → one caption line.
 /// The old sentence-subtitle lives behind the ⓘ toggle.

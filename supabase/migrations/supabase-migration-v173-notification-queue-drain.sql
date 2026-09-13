@@ -1,6 +1,6 @@
 -- v173 — notification_queue had no consumer.
 --
--- Lucid has two notification systems. `nudges` is the live one: the Lucid Bridge
+-- Health has two notification systems. `nudges` is the live one: the Bridge
 -- iOS app polls it every 30s and fires a native banner. `notification_queue` is
 -- written by ble_freshness_check() and friends, and nothing has ever read it —
 -- 870 rows queued, 29 ever stamped sent_at, the last one on 2026-03-30.

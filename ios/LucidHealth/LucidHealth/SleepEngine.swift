@@ -926,7 +926,7 @@ extension HealthEngine {
 
         let content = UNMutableNotificationContent()
         content.title = "😴 Sleep Detected"
-        content.body = "Stage: \(stage.rawValue). Not sleeping? Open Lucid Bridge to dismiss."
+        content.body = "Stage: \(stage.rawValue). Not sleeping? Open Bridge to dismiss."
         content.sound = .default
         content.categoryIdentifier = "SLEEP_DETECTION"
 

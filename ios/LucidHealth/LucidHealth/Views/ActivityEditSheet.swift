@@ -8,7 +8,7 @@ import SwiftUI
 //   .create(defaultStart) — fresh manual log, optionally via backtrack
 //
 // What Fabi can do:
-//   • Custom free-text type (Lucid understands semantically, no picker prison)
+//   • Custom free-text type (Health understands semantically, no picker prison)
 //   • Suggestion chips for common types (one-tap fill)
 //   • Adjust start/end with DatePicker
 //   • Open physiology backtrack scrubber with zoom/pan + spike clustering
@@ -43,7 +43,7 @@ struct ActivityEditSheet: View {
     @State private var showBacktrack: Bool = false
 
     /// Suggestion chips — tap to fill the TextField. Fabi can also type anything
-    /// freeform since Lucid resolves semantic meaning on the backend.
+    /// freeform since Health resolves semantic meaning on the backend.
     private let typeSuggestions: [String] = [
         "deep_work", "ee_work", "exercise", "meditation", "reading", "creative",
         "social", "nap", "sauna", "cold_plunge", "anxiety", "meal", "coffee", "walk"

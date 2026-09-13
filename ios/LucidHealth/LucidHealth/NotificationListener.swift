@@ -134,10 +134,10 @@ class NotificationListener {
 
     // MARK: - Fire Local Notification
 
-    /// Reads the user-selected Lucid sound from UserDefaults. Two custom
+    /// Reads the user-selected Health sound from UserDefaults. Two custom
     /// sounds ship in the bundle (`lucid-warm.caf`, `lucid-halo.caf`) — derived
     /// from the iPhone notification source so they keep that clean character
-    /// while being instantly recognizable as Lucid (not iMessage).
+    /// while being instantly recognizable as Health (not iMessage).
     /// Default = "warm". Falls back to `.default` if pref says "system".
     static func lucidSound() -> UNNotificationSound {
         let pref = UserDefaults.standard.string(forKey: "lucid_notification_sound") ?? "warm"
@@ -176,13 +176,13 @@ class NotificationListener {
             previewPlayer?.prepareToPlay()
             previewPlayer?.play()
         } catch {
-            print("Lucid sound preview failed: \(error.localizedDescription)")
+            print("Health sound preview failed: \(error.localizedDescription)")
         }
     }
 
     private func fire(nudge: PendingNudge) async {
         let content = UNMutableNotificationContent()
-        content.title = nudge.title ?? "Lucid"
+        content.title = nudge.title ?? "Health"
         content.body = nudge.message
 
         if nudge.isSmartWake {
@@ -210,7 +210,7 @@ class NotificationListener {
 
         do {
             try await UNUserNotificationCenter.current().add(request)
-            log("Fired notification: \(nudge.title ?? "Lucid") — \(String(nudge.message.prefix(40)))")
+            log("Fired notification: \(nudge.title ?? "Health") — \(String(nudge.message.prefix(40)))")
         } catch {
             log("Failed to fire notification: \(error.localizedDescription)")
         }

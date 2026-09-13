@@ -1,5 +1,5 @@
 -- Migration v29: Realtime health data from Whoop iOS BLE bridge
--- Stores live HR + RR + HRV readings streamed from the Lucid Bridge iOS app.
+-- Stores live HR + RR + HRV readings streamed from the Bridge iOS app.
 -- Auto-cleanup function: keep last 7 days to avoid unbounded growth.
 
 -- ===== REALTIME HEALTH READINGS =====

@@ -2,7 +2,7 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
-/// Lucid brand palette — local copy because LucidWidgets.swift's
+/// Health brand palette — local copy because LucidWidgets.swift's
 /// WidgetPalette is file-private. Same hex values, kept in sync.
 private enum WidgetLAPalette {
     static let violet = Color(red: 0.545, green: 0.486, blue: 0.965)

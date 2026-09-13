@@ -1,4 +1,4 @@
-name: Build LucidHealth iOS
+name: Build Health iOS
 
 on:
   push:
@@ -250,7 +250,7 @@ jobs:
 
           NEW_ENTRY=$(cat <<JSONEND
           {
-            "name": "Lucid Health",
+            "name": "Health",
             "bundleIdentifier": "com.fabi.lucidhealth",
             "developerName": "Fabi",
             "localizedDescription": "Unified health companion - streams Whoop BLE data and logs meals with Gemini Vision to surface brain-health patterns.",

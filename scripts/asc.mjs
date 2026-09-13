@@ -8,10 +8,10 @@
 //   node scripts/asc.mjs whoami
 //   node scripts/asc.mjs apps
 //   node scripts/asc.mjs bundles
-//   node scripts/asc.mjs bundle-create com.fabi.lucidride "Lucid Ride"
+//   node scripts/asc.mjs bundle-create com.fabi.lucidride "Ride"
 //   node scripts/asc.mjs caps com.fabi.lucidhealth
 //   node scripts/asc.mjs cap-enable com.fabi.lucidhealth APP_GROUPS
-//   node scripts/asc.mjs app-create com.fabi.lucidride "Lucid Ride" lucidride
+//   node scripts/asc.mjs app-create com.fabi.lucidride "Ride" lucidride
 //   node scripts/asc.mjs builds com.fabi.lucidhealth
 //   node scripts/asc.mjs beta-groups <appId>
 //   node scripts/asc.mjs raw GET /v1/apps?limit=5

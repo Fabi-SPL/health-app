@@ -11,7 +11,7 @@ extension Notification.Name {
     static let healthBaselineRestored = Notification.Name("lucid.healthBaselineRestored")
 }
 
-/// Lucid Health Engine — computes Cognitive Readiness, RMSSD, and respiratory rate
+/// Health Engine — computes Cognitive Readiness, RMSSD, and respiratory rate
 /// from live RR intervals streamed from the Whoop strap.
 /// Auto-calibrated from 654 days of personal Whoop data (2024-06 → 2026-04).
 ///

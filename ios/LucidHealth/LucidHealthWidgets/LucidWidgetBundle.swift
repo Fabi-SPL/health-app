@@ -9,7 +9,7 @@ struct LucidWidgetBundle: WidgetBundle {
         // The earlier 9 → 5 cut was made when widgets were stuck at zeros
         // (root cause turned out to be missing App Group entitlement in
         // the IPA — fixed in CI). With the entitlement fix, the iOS
-        // refresh budget concern still exists in theory but the Lucid app
+        // refresh budget concern still exists in theory but the Health app
         // is single-user / bespoke-per-mode, so trading "more refreshes
         // per face" for "more faces to choose from" is the right call.
         // Each widget can still pick its preferred lock-screen family.

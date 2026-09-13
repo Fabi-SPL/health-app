@@ -1977,7 +1977,7 @@ class SupabaseClient {
         }
     }
 
-    // MARK: - Cross-Domain Insights (two-tier: Lucid computed + Gemini speculative)
+    // MARK: - Cross-Domain Insights (two-tier: Health computed + Gemini speculative)
 
     /// Rows written by scripts/insight-engine.mjs. Each carries a `source` (lucid|gemini)
     /// so the Insights tab can badge computed vs AI-generated connections.

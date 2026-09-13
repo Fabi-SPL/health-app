@@ -83,8 +83,8 @@ struct TodayView: View {
                 // Greeting moved to the prominent in-scroll header; toolbar is just
                 // the wordmark now (no duplicate greeting).
                 TwoToneHeadline(
-                    primary: "Lucid",
-                    secondary: "Health",
+                    primary: "Health",
+                    secondary: "",
                     font: .system(size: 17, weight: .heavy, design: .rounded)
                 )
             }
@@ -483,7 +483,7 @@ struct TodayView: View {
     }
 
     // MARK: - Activity Composer (FORMAT: COMPOSER) — inline custom-name activity start
-    // No predefined picker — Fabi types what he's doing, taps Start. Lucid AI canonicalizes
+    // No predefined picker — Fabi types what he's doing, taps Start. the server canonicalizes
     // server-side. When a session is active, this shows the active card with End button.
     @ViewBuilder
     private var activityComposerSection: some View {
@@ -607,7 +607,7 @@ struct TodayView: View {
         guard !trimmed.isEmpty else { return }
         let h = UIImpactFeedbackGenerator(style: .medium)
         h.impactOccurred()
-        // Slug the name (lowercase, underscores) — Lucid AI canonicalizes anyway
+        // Slug the name (lowercase, underscores) — the server canonicalizes anyway
         let slug = trimmed.lowercased()
             .replacingOccurrences(of: " ", with: "_")
             .replacingOccurrences(of: "-", with: "_")
