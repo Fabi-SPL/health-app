@@ -128,7 +128,8 @@ const CMDS = {
 
   async caps(identifier) {
     const b = await bundleIdOf(identifier)
-    const caps = await all(`/v1/bundleIds/${b.id}/bundleIdCapabilities?limit=200`)
+    // Relationship endpoints reject ?limit — 400 PARAMETER_ERROR.ILLEGAL.
+    const caps = await all(`/v1/bundleIds/${b.id}/bundleIdCapabilities`)
     row(identifier, '->', b.id)
     for (const c of caps) row(' ', c.attributes.capabilityType, JSON.stringify(c.attributes.settings || []))
   },
@@ -145,14 +146,19 @@ const CMDS = {
     row('enabled', capabilityType, 'on', identifier, '->', r.data.id)
   },
 
-  // App records: the public API has historically been read-only here. This
-  // attempts the documented POST and prints Apple's own error if it is refused,
-  // so the answer comes from the API and not from a guess.
-  async 'app-create'(bundleId, name, sku, locale = 'en-US') {
-    const r = await api('POST', '/v1/apps', {
-      data: { type: 'apps', attributes: { bundleId, name, sku, primaryLocale: locale } },
-    })
-    row('created app', r.data.id, r.data.attributes.bundleId)
+  // Measured 2026-09-13, not guessed: POST /v1/apps returns
+  //   403 FORBIDDEN_ERROR - The resource 'apps' does not allow 'CREATE'.
+  //   Allowed operations are: GET_COLLECTION, GET_INSTANCE, UPDATE
+  // So the first app record for a bundle ID is a browser job, once per app.
+  // Everything after it (builds, TestFlight, metadata UPDATE) is scriptable.
+  async 'app-create'(bundleId) {
+    console.error([
+      `Apple does not allow app-record creation over the API (403, CREATE not permitted).`,
+      `Create it once at https://appstoreconnect.apple.com/apps -> + -> New App`,
+      `  Platform iOS | Bundle ID ${bundleId || '<bundle>'} | SKU = the bundle's last component`,
+      `Then everything else here works against it.`,
+    ].join(String.fromCharCode(10)))
+    process.exit(3)
   },
 
   async builds(identifier) {
