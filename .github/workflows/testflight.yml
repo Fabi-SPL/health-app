@@ -205,8 +205,15 @@ jobs:
           IPA=$(find $RUNNER_TEMP/export -name "*.ipa" | head -1)
           [ -n "$IPA" ] || { echo "ERROR: no IPA exported"; exit 1; }
           echo "Uploading $IPA (build ${BUILD_NUM})"
+          # altool can print UPLOAD FAILED and still exit 0, which gives a green
+          # run with no build in TestFlight. Read its output and decide.
+          set -o pipefail
           xcrun altool --upload-app -f "$IPA" -t ios \
-            --apiKey "${ASC_KEY_ID}" --apiIssuer "${ASC_ISSUER_ID}"
+            --apiKey "${ASC_KEY_ID}" --apiIssuer "${ASC_ISSUER_ID}" 2>&1 | tee /tmp/altool.log
+          if grep -qiE "UPLOAD FAILED|Failed to upload package|Validation failed" /tmp/altool.log; then
+            echo "::error::altool rejected the build - see the log above."
+            exit 1
+          fi
           echo "Uploaded. Apple processes it in 5-30 min, then it appears in TestFlight."
 
       - name: Keep the IPA as an artifact
