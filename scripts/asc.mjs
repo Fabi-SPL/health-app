@@ -50,9 +50,16 @@ function token() {
 const BASE = 'https://api.appstoreconnect.apple.com'
 let JWT = null
 
+// Git Bash (MSYS) rewrites a bare argument like /v1/betaGroups into
+// C:/Program Files/Git/v1/betaGroups before node ever sees it — measured
+// 2026-09-13, and it surfaces as an unhelpful "fetch failed / ENOTFOUND"
+// against a host that is perfectly reachable. Args carrying a query string
+// escape the rewrite, which is why GET calls looked fine and POSTs did not.
+const unmangle = (p) => (p.startsWith('/') ? p : p.replace(/^.*?(?=\/v\d+\/)/, ''))
+
 async function api(method, path, body) {
   JWT ||= token()
-  const res = await fetch(path.startsWith('http') ? path : BASE + path, {
+  const res = await fetch(path.startsWith('http') ? path : BASE + unmangle(path), {
     method,
     headers: { Authorization: `Bearer ${JWT}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
@@ -198,5 +205,7 @@ try {
   await CMDS[cmd](...args)
 } catch (e) {
   console.error(String(e.message || e))
+  // undici's "fetch failed" hides the real reason in .cause — print it.
+  if (e.cause) console.error('  cause: ' + (e.cause.code || e.cause.message || String(e.cause)))
   process.exit(1)
 }
