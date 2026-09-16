@@ -365,7 +365,7 @@ struct WhoopProtocol {
     /// byte1=on/off. Sending a single byte made the firmware read it as `revision`
     /// and reject with "unsupported revision:N" / "unsupported option:N" — which is
     /// exactly what our console logs showed for five months. Must be preceded by
-    /// cmd 81 START_RAW_DATA [0x01] (see startRawDataForIMUPacket).
+    /// cmd 81 START_RAW_DATA with a u32 duration (see startRawDataPacket).
     static func toggleIMUPacket(enable: Bool) -> Data {
         buildPacket(type: .command, cmd: .toggleIMU, data: Data([0x01, enable ? 0x01 : 0x00]))
     }
@@ -462,16 +462,21 @@ struct WhoopProtocol {
         buildPacket(type: .command, cmd: .selectWrist, data: Data([right ? 0x01 : 0x00]))
     }
 
-    static func startRawOpticalPacket() -> Data {
-        buildPacket(type: .command, cmd: .startRawData, data: Data([0x00]))
-    }
-
-    /// START_RAW_DATA precursor for the IMU stream. Hardware-verified payload is
-    /// [0x01] (ryanbr/noop PR #1709): "opcode 106 alone acknowledges but does not
-    /// start the producer. START_RAW_DATA must precede the two-byte realtime IMU
-    /// selector." Distinct from startRawOpticalPacket ([0x00]) which targets PPG.
-    static func startRawDataForIMUPacket() -> Data {
-        buildPacket(type: .command, cmd: .startRawData, data: Data([0x01]))
+    /// START_RAW_DATA (CMD 81). v101: the payload is a u32 LE DURATION IN
+    /// MILLISECONDS, not a mode selector. Two independent confirmations: the
+    /// on-device wearable RE doc, and our own strap — the cmd-81 response
+    /// `0a 00 01 <u32 LE>` echoes a live millisecond counter that advanced by
+    /// exactly the wall-clock gap between our connects. The old [0x00]/[0x01]
+    /// payloads therefore requested 0 ms and 1 ms of raw data: the strap ACKed,
+    /// ran for that long, and went silent — which is why every
+    /// stream_enable_checkpoint since v100 logged imu_samples_this_session: 0.
+    static func startRawDataPacket(durationMs: UInt32) -> Data {
+        var d = Data(count: 4)
+        d[0] = UInt8(durationMs & 0xFF)
+        d[1] = UInt8((durationMs >> 8) & 0xFF)
+        d[2] = UInt8((durationMs >> 16) & 0xFF)
+        d[3] = UInt8((durationMs >> 24) & 0xFF)
+        return buildPacket(type: .command, cmd: .startRawData, data: d)
     }
 
     static func stopRawOpticalPacket() -> Data {
@@ -551,6 +556,37 @@ struct WhoopProtocol {
             i += frameStride
         }
         return frames
+    }
+
+    /// v101 — parse a type-43 cmd-41 raw IMU frame. This is how the IMU actually
+    /// arrives on this firmware once CMD 81 opens a raw window: ~1917-byte frame,
+    /// 100 samples per axis at ~100 Hz, s16 LE arrays at frame-absolute offsets
+    /// 89/289/489 (accel x/y/z) and 692/892/1092 (gyro x/y/z), accel 4096 LSB/g.
+    /// packet.data begins at frame offset 7, so the arrays sit at data offsets
+    /// 82/282/482 and 685/885/1085. Timestamps: the batch spans ~1 s; the 1 Hz
+    /// decimation in BLEManager collapses it anyway, so all samples share now().
+    static func parseIMUArrayFrame(data: Data) -> [IMUFrame] {
+        let accelOff = [82, 282, 482]
+        let gyroOff = [685, 885, 1085]
+        let n = 100
+        guard data.count >= gyroOff[2] + n * 2 else { return [] }
+        let base = data.startIndex
+        func s16(_ off: Int, _ i: Int) -> Int16 {
+            let j = base + off + i * 2
+            return Int16(bitPattern: UInt16(data[j]) | (UInt16(data[j + 1]) << 8))
+        }
+        let now = UInt32(Date().timeIntervalSince1970)
+        var out: [IMUFrame] = []
+        out.reserveCapacity(n)
+        for i in 0..<n {
+            out.append(IMUFrame(
+                timestamp: now,
+                heartRate: 0,
+                accelX: s16(accelOff[0], i), accelY: s16(accelOff[1], i), accelZ: s16(accelOff[2], i),
+                gyroX: s16(gyroOff[0], i), gyroY: s16(gyroOff[1], i), gyroZ: s16(gyroOff[2], i)
+            ))
+        }
+        return out
     }
 
     // MARK: - MAX77818 ModelGauge m5 Decoder (verified register map)
@@ -733,13 +769,15 @@ struct WhoopProtocol {
     /// precursor that tells the MAX86171 AFE to start pushing optical frames
     /// into the BLE pipeline. Expected to be sent BEFORE CMD 81 (START_RAW_DATA).
     static func enableOpticalDataPacket(enable: Bool = true) -> Data {
-        buildRawCommandPacket(cmd: 107, data: Data([enable ? 0x01 : 0x00]))
+        // v101 — two-byte [revision, on/off] like CMD 106; single-byte payloads
+        // are read as a bare revision selector and rejected.
+        buildRawCommandPacket(cmd: 107, data: Data([0x01, enable ? 0x01 : 0x00]))
     }
 
     /// CMD 108 — TOGGLE_OPTICAL_MODE.
     /// Switches the optical front-end between modes (likely HR vs raw-PPG).
     static func toggleOpticalModePacket(enable: Bool = true) -> Data {
-        buildRawCommandPacket(cmd: 108, data: Data([enable ? 0x01 : 0x00]))
+        buildRawCommandPacket(cmd: 108, data: Data([0x01, enable ? 0x01 : 0x00]))
     }
 
     // MARK: - Realtime Temperature (decode_1c subtype 0x31)

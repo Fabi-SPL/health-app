@@ -221,6 +221,12 @@ class BLEManager: NSObject, ObservableObject {
     private let imuFlushInterval: TimeInterval = 1.0   // 1 row per second
     private let imuFlushMaxFrames: Int = 60            // safety cap — never buffer more than ~1 sec at 52 Hz
 
+    // v101 — per-characteristic reassembly buffers. Raw-mode frames (type-43)
+    // are up to ~1.9 KB and arrive fragmented across ~244-byte notifications.
+    private var rxAssembly: [CBUUID: Data] = [:]
+    // v101 — invalidates stale CMD-81 re-arm chains across reconnects.
+    private var rawArmGeneration = 0
+
     // Standard BLE Device Information Service (0x180A)
     private let deviceInfoServiceUUID = CBUUID(string: "180A")
     private let manufacturerUUID = CBUUID(string: "2A29")
@@ -1225,20 +1231,31 @@ class BLEManager: NSObject, ObservableObject {
             self.log("v66: Requesting body location (CMD 84)")
             p.writeValue(WhoopProtocol.bodyLocationPacket(), for: c, type: .withResponse)
         }
-        // v100 — verified IMU enable sequence (ryanbr/noop PR #1709, issue #2234).
-        // START_RAW_DATA [0x01] must precede TOGGLE_IMU [0x01,0x01]; the strap only
-        // acks 106 without starting the producer if 81 hasn't run. This replaces the
-        // v66-v70 single-byte probe + fuzz salad that the firmware rejected for months.
-        bleQueue.asyncAfter(deadline: .now() + 2.8) { [weak self] in
+        // v101 — corrected raw-stream enable sequence. CMD 81's payload is a u32
+        // duration in ms (the strap's own cmd-81 response echoes a ms counter);
+        // v100's [0x01] asked for one millisecond of data, hence months of
+        // imu_samples_this_session: 0. Order per on-device RE: optical enables
+        // (107/108, two-byte like 106) → 81 with a real window → 106.
+        rawArmGeneration += 1
+        let armGen = rawArmGeneration
+        bleQueue.asyncAfter(deadline: .now() + 2.6) { [weak self] in
             guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v100: START_RAW_DATA [0x01] (CMD 81) — IMU precursor")
-            p.writeValue(WhoopProtocol.startRawDataForIMUPacket(), for: c, type: .withResponse)
+            self.log("v101: ENABLE_OPTICAL_DATA [1,1] (CMD 107)")
+            p.writeValue(WhoopProtocol.enableOpticalDataPacket(enable: true), for: c, type: .withResponse)
         }
-        bleQueue.asyncAfter(deadline: .now() + 3.2) { [weak self] in
+        bleQueue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
             guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v100: TOGGLE_IMU [0x01,0x01] (CMD 106) — enable 52 Hz stream")
+            self.log("v101: TOGGLE_OPTICAL_MODE [1,1] (CMD 108)")
+            p.writeValue(WhoopProtocol.toggleOpticalModePacket(enable: true), for: c, type: .withResponse)
+        }
+        bleQueue.asyncAfter(deadline: .now() + 3.6) { [weak self] in
+            self?.armRawStream(generation: armGen)
+        }
+        bleQueue.asyncAfter(deadline: .now() + 4.2) { [weak self] in
+            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+            self.log("v101: TOGGLE_IMU [0x01,0x01] (CMD 106)")
             p.writeValue(WhoopProtocol.toggleIMUPacket(enable: true), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(type: "imu_enable_sent", data: ["seq": "81[1]->106[1,1]", "version": "v100"])
+            self.supabase.pushWhoopEvent(type: "imu_enable_sent", data: ["seq": "107[1,1]->108[1,1]->81[u32 600000ms]->106[1,1]", "version": "v101"])
         }
 
         // Empirical probes — send once on connect, log raw responses into whoop_events.
@@ -1260,28 +1277,8 @@ class BLEManager: NSObject, ObservableObject {
             p.writeValue(WhoopProtocol.labradorFilteredPacket(enable: true), for: c, type: .withResponse)
             self.supabase.pushWhoopEvent(type: "probe_sent_cmd_139", data: ["purpose": "labrador_filtered_on"])
         }
-        // v68 — community RE (bWanShiTong, 2026) hypothesises CMD 107/108 are
-        // required precursors to CMD 81. Send enable-optical-data → toggle-optical-mode → start-raw,
-        // spaced enough that the AFE has time to warm up between state changes.
-        bleQueue.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v68 probe: ENABLE_OPTICAL_DATA (CMD 107)")
-            p.writeValue(WhoopProtocol.enableOpticalDataPacket(enable: true), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(type: "probe_sent_cmd_107", data: ["purpose": "enable_optical_data"])
-        }
-        bleQueue.asyncAfter(deadline: .now() + 5.6) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v68 probe: TOGGLE_OPTICAL_MODE (CMD 108)")
-            p.writeValue(WhoopProtocol.toggleOpticalModePacket(enable: true), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(type: "probe_sent_cmd_108", data: ["purpose": "toggle_optical_mode"])
-        }
-        // Raw optical stream — highest BLE bandwidth. Must come AFTER 107 + 108.
-        bleQueue.asyncAfter(deadline: .now() + 6.2) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v66 probe: START_RAW_DATA optical stream (CMD 81)")
-            p.writeValue(WhoopProtocol.startRawOpticalPacket(), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(type: "probe_sent_cmd_81", data: ["purpose": "start_raw_optical"])
-        }
+        // v101 — the v68 probe copies of 107/108/81 are gone: they are now part
+        // of the real enable sequence above, with the corrected payloads.
 
         // v100 — the cmd-106 payload fuzz and the 81/107/108 reorder probe are
         // retired. The firmware told us the answer for months ("unsupported
@@ -2049,17 +2046,31 @@ class BLEManager: NSObject, ObservableObject {
             return
         }
         if enable {
-            // v100 — must send START_RAW_DATA [0x01] before the 2-byte toggle,
-            // same verified sequence as the connect-time enable.
-            log("IMU ON: START_RAW_DATA [0x01] (CMD 81) then TOGGLE_IMU [0x01,0x01] (CMD 106)...")
-            p.writeValue(WhoopProtocol.startRawDataForIMUPacket(), for: c, type: .withResponse)
+            // v101 — arm a real raw window (u32 duration ms) before the 2-byte toggle.
+            log("IMU ON: START_RAW_DATA 600000 ms (CMD 81) then TOGGLE_IMU [0x01,0x01] (CMD 106)...")
+            rawArmGeneration += 1
+            armRawStream(generation: rawArmGeneration)
             bleQueue.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
                 p.writeValue(WhoopProtocol.toggleIMUPacket(enable: true), for: c, type: .withResponse)
             }
         } else {
             log("IMU OFF: TOGGLE_IMU [0x01,0x00] (CMD 106)...")
+            rawArmGeneration += 1   // kill the re-arm chain
             p.writeValue(WhoopProtocol.toggleIMUPacket(enable: false), for: c, type: .withResponse)
+        }
+    }
+
+    /// v101 — open the strap's raw-data window (CMD 81, u32 duration ms) and keep
+    /// it open: the producer stops when the window expires, so re-arm every 8 min
+    /// with a 10-min window while connected. The generation counter kills stale
+    /// chains across reconnects and explicit IMU-off.
+    private func armRawStream(generation: Int) {
+        guard generation == rawArmGeneration, let p = peripheral, let c = cmdToStrap else { return }
+        log("v101: START_RAW_DATA 600000 ms (CMD 81) — raw window armed, re-arm in 8 min")
+        p.writeValue(WhoopProtocol.startRawDataPacket(durationMs: 600_000), for: c, type: .withResponse)
+        bleQueue.asyncAfter(deadline: .now() + 480) { [weak self] in
+            self?.armRawStream(generation: generation)
         }
     }
 
@@ -2672,26 +2683,60 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
 
-        guard let packet = WhoopProtocol.parsePacket(raw) else {
-            // Unparseable packet — if debug capture is on, log the raw frame so we
-            // can diagnose format changes (e.g., new header / new SOF / etc.)
-            if debugPacketCapture && debugPacketsThisSession < maxDebugPacketsPerSession {
+        // v101 — multi-notification reassembly. The old one-notification-one-packet
+        // parse dropped every fragment of a large frame as "unparseable", so even a
+        // correctly enabled raw stream (type-43, ~1.9 KB frames) was thrown away at
+        // the door. Buffer per characteristic and cut complete frames off the front.
+        var buf = rxAssembly[characteristic.uuid] ?? Data()
+        buf.append(raw)
+        var parsedPackets: [WhoopPacket] = []
+        while !buf.isEmpty {
+            if buf[buf.startIndex] != 0xAA {
+                if let sof = buf.firstIndex(of: 0xAA) {
+                    buf = Data(buf[sof...])
+                } else {
+                    buf.removeAll()
+                    break
+                }
+            }
+            guard buf.count >= 4 else { break }
+            let len = UInt16(buf[buf.startIndex + 1]) | (UInt16(buf[buf.startIndex + 2]) << 8)
+            if len < 7 || len > 8192 {
+                // Implausible header — this SOF byte was payload noise. Resync.
+                buf.removeFirst(1)
+                continue
+            }
+            let total = 4 + Int(len)
+            guard buf.count >= total else { break }   // incomplete — wait for the next notification
+            let frame = Data(buf.prefix(total))
+            buf.removeFirst(total)
+            if let p = WhoopProtocol.parsePacket(frame) {
+                parsedPackets.append(p)
+            } else if debugPacketCapture && debugPacketsThisSession < maxDebugPacketsPerSession {
                 debugPacketsThisSession += 1
-                let hex = raw.prefix(1024).map { String(format: "%02x", $0) }.joined()
-                let charName = characteristicName(characteristic.uuid)
+                let hex = frame.prefix(1024).map { String(format: "%02x", $0) }.joined()
                 supabase.pushPacketDebug(
                     sessionId: reSessionId,
-                    characteristic: charName,
+                    characteristic: characteristicName(characteristic.uuid),
                     packetType: -1,
                     packetCmd: -1,
-                    packetLength: raw.count,
+                    packetLength: frame.count,
                     dataHex: String(hex),
                     note: "unparseable"
                 )
             }
-            return
         }
+        // A desynced stream must not grow the residue unbounded.
+        rxAssembly[characteristic.uuid] = buf.count > 16384 ? Data() : buf
 
+        for packet in parsedPackets {
+            routePacket(packet, from: characteristic, raw: raw)
+        }
+    }
+
+    /// v101 — per-packet routing, extracted from didUpdateValueFor so the
+    /// reassembler can hand over several packets from one notification.
+    private func routePacket(_ packet: WhoopPacket, from characteristic: CBCharacteristic, raw: Data) {
         // v68 — log every parsed packet during debug sessions. Lets us hunt unknown
         // packet types that might carry PPG / SpO2 / skin temp / respiration.
         if debugPacketCapture && debugPacketsThisSession < maxDebugPacketsPerSession {
@@ -4920,6 +4965,27 @@ extension BLEManager: CBPeripheralDelegate {
                 )
             }
         } else if packet.type == PacketType.realtimeRawData.rawValue {
+            // v101 — type-43 cmd-41 is the IMU on this firmware: ~1917-byte frame,
+            // 100 samples/axis at ~100 Hz, s16 LE arrays (wearable RE doc, on-device
+            // verified). Route it into the same ingest pipeline as type-51.
+            if packet.cmd == 41 {
+                let imuFrames = WhoopProtocol.parseIMUArrayFrame(data: packet.data)
+                if !imuFrames.isEmpty {
+                    imuSampleCount += 1
+                    ingestIMUFrames(imuFrames)
+                    if imuSampleCount <= 5 {
+                        supabase.pushDebugLog(key: "imu43_frame_\(imuSampleCount)",
+                                              value: "len=\(packet.data.count) frames=\(imuFrames.count)")
+                    }
+                } else {
+                    supabase.pushWhoopEvent(
+                        type: "raw_imu_frame_unparsed",
+                        data: ["length": packet.data.count],
+                        rawBytes: packet.data.prefix(256)
+                    )
+                }
+                return
+            }
             // Raw optical (PPG) — MAX86171 FIFO format decoded per datasheet.
             let samples = WhoopProtocol.parsePPGPacket(cmd: packet.cmd, data: packet.data)
             if !samples.isEmpty {
@@ -5010,29 +5076,7 @@ extension BLEManager: CBPeripheralDelegate {
         let frames = WhoopProtocol.parseIMUPacket(cmd: packet.cmd, data: d)
 
         if !frames.isEmpty {
-            // Feed each frame to the health engine for movement-aware sleep staging.
-            for f in frames {
-                let accelMag = Double(f.accelMagnitudeMg) * 8.192   // back to int16 magnitude scale
-                let gyroMag = sqrt(Double(f.gyroX)*Double(f.gyroX) + Double(f.gyroY)*Double(f.gyroY) + Double(f.gyroZ)*Double(f.gyroZ))
-                healthEngine.addIMUReading(accelMagnitude: accelMag, gyroMagnitude: gyroMag)
-            }
-            // v98 — cache mean of this batch for the next realtime_health push.
-            // Mean over the batch (not last frame) smooths out single-frame jitter
-            // since the BLE packet bundles ~52 Hz frames per second.
-            let count = Double(frames.count)
-            let meanMg = Int(frames.map { Double($0.accelMagnitudeMg) }.reduce(0, +) / count)
-            let meanMove = frames.map { $0.movementScore }.reduce(0, +) / count
-            lastAccelMagMg = meanMg
-            lastMovementScore = meanMove
-            lastImuUpdate = Date()
-
-            // Buffer frames for Supabase — decimated flush every 1s or 60 frames.
-            imuBuffer.append(contentsOf: frames)
-            let now = Date()
-            if imuBuffer.count >= imuFlushMaxFrames || now.timeIntervalSince(lastImuFlush) >= imuFlushInterval {
-                flushIMUBufferToSupabase()
-                lastImuFlush = now
-            }
+            ingestIMUFrames(frames)
         } else if d.count >= 12 {
             // Legacy fallback: first 12 bytes as a single frame (no timestamp header).
             let accelX = Int16(d[0]) | (Int16(d[1]) << 8)
@@ -5063,6 +5107,32 @@ extension BLEManager: CBPeripheralDelegate {
             if imuSampleCount <= 5 {
                 supabase.pushDebugLog(key: "imu_raw_\(imuSampleCount)", value: "type=\(packet.type) cmd=\(packet.cmd) len=\(d.count) hex=\(hex)")
             }
+        }
+    }
+
+    /// Shared IMU ingest — fed by type-51 batches AND type-43 cmd-41 array frames.
+    private func ingestIMUFrames(_ frames: [WhoopProtocol.IMUFrame]) {
+        // Feed each frame to the health engine for movement-aware sleep staging.
+        for f in frames {
+            let accelMag = Double(f.accelMagnitudeMg) * 8.192   // back to int16 magnitude scale
+            let gyroMag = sqrt(Double(f.gyroX)*Double(f.gyroX) + Double(f.gyroY)*Double(f.gyroY) + Double(f.gyroZ)*Double(f.gyroZ))
+            healthEngine.addIMUReading(accelMagnitude: accelMag, gyroMagnitude: gyroMag)
+        }
+        // v98 — cache mean of this batch for the next realtime_health push.
+        // Mean over the batch (not last frame) smooths out single-frame jitter.
+        let count = Double(frames.count)
+        let meanMg = Int(frames.map { Double($0.accelMagnitudeMg) }.reduce(0, +) / count)
+        let meanMove = frames.map { $0.movementScore }.reduce(0, +) / count
+        lastAccelMagMg = meanMg
+        lastMovementScore = meanMove
+        lastImuUpdate = Date()
+
+        // Buffer frames for Supabase — decimated flush every 1s or 60 frames.
+        imuBuffer.append(contentsOf: frames)
+        let now = Date()
+        if imuBuffer.count >= imuFlushMaxFrames || now.timeIntervalSince(lastImuFlush) >= imuFlushInterval {
+            flushIMUBufferToSupabase()
+            lastImuFlush = now
         }
     }
 
