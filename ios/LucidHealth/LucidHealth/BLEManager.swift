@@ -141,8 +141,12 @@ class BLEManager: NSObject, ObservableObject {
     var debugPacketCapture: Bool {
         UserDefaults.standard.object(forKey: "debug_packet_capture") as? Bool ?? true
     }
+    // v100 — default OFF. The opcode sweep + payload-variant scan were RE tools to
+    // find the IMU enable format; that's solved (81[1]->106[1,1]). Leaving them on
+    // just floods whoop_events and the console ring buffer with dead probes. Flip the
+    // UserDefault to re-arm if we go hunting for another undocumented stream (e.g. PPG).
     var cmdSweepEnabled: Bool {
-        UserDefaults.standard.object(forKey: "cmd_sweep_enabled") as? Bool ?? true
+        UserDefaults.standard.object(forKey: "cmd_sweep_enabled") as? Bool ?? false
     }
     var reSessionId: String = UUID().uuidString
     var debugPacketsThisSession: Int = 0
@@ -1195,11 +1199,20 @@ class BLEManager: NSObject, ObservableObject {
             self.log("v66: Requesting body location (CMD 84)")
             p.writeValue(WhoopProtocol.bodyLocationPacket(), for: c, type: .withResponse)
         }
+        // v100 — verified IMU enable sequence (ryanbr/noop PR #1709, issue #2234).
+        // START_RAW_DATA [0x01] must precede TOGGLE_IMU [0x01,0x01]; the strap only
+        // acks 106 without starting the producer if 81 hasn't run. This replaces the
+        // v66-v70 single-byte probe + fuzz salad that the firmware rejected for months.
         bleQueue.asyncAfter(deadline: .now() + 2.8) { [weak self] in
             guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v66: Enabling IMU stream (CMD 106)")
+            self.log("v100: START_RAW_DATA [0x01] (CMD 81) — IMU precursor")
+            p.writeValue(WhoopProtocol.startRawDataForIMUPacket(), for: c, type: .withResponse)
+        }
+        bleQueue.asyncAfter(deadline: .now() + 3.2) { [weak self] in
+            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+            self.log("v100: TOGGLE_IMU [0x01,0x01] (CMD 106) — enable 52 Hz stream")
             p.writeValue(WhoopProtocol.toggleIMUPacket(enable: true), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(type: "probe_sent_cmd_106", data: ["purpose": "enable_imu_stream"])
+            self.supabase.pushWhoopEvent(type: "imu_enable_sent", data: ["seq": "81[1]->106[1,1]", "version": "v100"])
         }
 
         // Empirical probes — send once on connect, log raw responses into whoop_events.
@@ -1244,46 +1257,11 @@ class BLEManager: NSObject, ObservableObject {
             self.supabase.pushWhoopEvent(type: "probe_sent_cmd_81", data: ["purpose": "start_raw_optical"])
         }
 
-        // v70 — Firmware 1.1.41 silently rejects cmd 106 (no response captured),
-        // and cmds 81/107 ACK but never start streams. Hypothesis: firmware
-        // added an auth gate or the payload format changed. Sweep cmd 106 with
-        // alternate payload bytes to find the variant that elicits a response.
-        // Spaced so each one's response can be observed independently.
-        let cmd106Variants: [UInt8] = [0x02, 0x03, 0x05, 0x10, 0x80, 0xFF]
-        for (i, val) in cmd106Variants.enumerated() {
-            let delay = 8.0 + Double(i) * 1.2
-            bleQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-                self.log("v70 fuzz: CMD 106 with payload 0x\(String(format: "%02x", val))")
-                let payload = WhoopProtocol.buildRawCommandPacket(cmd: 106, data: Data([val]))
-                p.writeValue(payload, for: c, type: .withResponse)
-                self.supabase.pushWhoopEvent(
-                    type: "fuzz_cmd_106",
-                    data: ["payload_byte": Int(val), "iteration": i]
-                )
-            }
-        }
-
-        // v70 — Reorder probe: try START_RAW_DATA (81) BEFORE the optical
-        // enable + toggle, see if order matters. Some firmware revisions
-        // require raw-mode flag to be set first, then optical channel selected.
-        bleQueue.asyncAfter(deadline: .now() + 16.0) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v70 reorder probe: CMD 81 BEFORE 107/108 (alt sequence)")
-            p.writeValue(WhoopProtocol.startRawOpticalPacket(), for: c, type: .withResponse)
-        }
-        bleQueue.asyncAfter(deadline: .now() + 16.6) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            p.writeValue(WhoopProtocol.enableOpticalDataPacket(enable: true), for: c, type: .withResponse)
-        }
-        bleQueue.asyncAfter(deadline: .now() + 17.2) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            p.writeValue(WhoopProtocol.toggleOpticalModePacket(enable: true), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(
-                type: "probe_alt_sequence_81_107_108",
-                data: ["purpose": "test_inverted_order"]
-            )
-        }
+        // v100 — the cmd-106 payload fuzz and the 81/107/108 reorder probe are
+        // retired. The firmware told us the answer for months ("unsupported
+        // revision/option"): it wants a 2-byte payload, sent above. Fuzzing now
+        // only pollutes whoop_events and the strap's console ring buffer, which we
+        // want clean to read its own wear/sleep detector lines.
 
         // Silence detector — if no type-51 or type-43 arrives in the next 30s, log it.
         // Helps diagnose whether commands enabled the stream or not.
@@ -2044,8 +2022,19 @@ class BLEManager: NSObject, ObservableObject {
             log("Cannot toggle IMU — not connected")
             return
         }
-        log("IMU \(enable ? "ON" : "OFF") (CMD 106)...")
-        p.writeValue(WhoopProtocol.toggleIMUPacket(enable: enable), for: c, type: .withResponse)
+        if enable {
+            // v100 — must send START_RAW_DATA [0x01] before the 2-byte toggle,
+            // same verified sequence as the connect-time enable.
+            log("IMU ON: START_RAW_DATA [0x01] (CMD 81) then TOGGLE_IMU [0x01,0x01] (CMD 106)...")
+            p.writeValue(WhoopProtocol.startRawDataForIMUPacket(), for: c, type: .withResponse)
+            bleQueue.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+                p.writeValue(WhoopProtocol.toggleIMUPacket(enable: true), for: c, type: .withResponse)
+            }
+        } else {
+            log("IMU OFF: TOGGLE_IMU [0x01,0x00] (CMD 106)...")
+            p.writeValue(WhoopProtocol.toggleIMUPacket(enable: false), for: c, type: .withResponse)
+        }
     }
 
     // MARK: - Supabase Push
@@ -2338,7 +2327,7 @@ extension BLEManager: CBCentralManagerDelegate {
         supabase.pushWhoopEvent(
             type: "build_info",
             data: [
-                "code_version": "v70",
+                "code_version": "v100",
                 "re_session_id": reSessionId
             ]
         )

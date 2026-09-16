@@ -359,9 +359,15 @@ struct WhoopProtocol {
         buildPacket(type: .command, cmd: .toggleOpticalMode, data: Data([mode]))
     }
 
-    /// Toggle IMU streaming (accelerometer + gyro)
+    /// Toggle IMU streaming (accelerometer + gyro).
+    /// Hardware-verified (ryanbr/noop PR #1709, issue #2234): cmd 106 takes a
+    /// TWO-byte payload [revision, option], not one byte. byte0=revision selector,
+    /// byte1=on/off. Sending a single byte made the firmware read it as `revision`
+    /// and reject with "unsupported revision:N" / "unsupported option:N" — which is
+    /// exactly what our console logs showed for five months. Must be preceded by
+    /// cmd 81 START_RAW_DATA [0x01] (see startRawDataForIMUPacket).
     static func toggleIMUPacket(enable: Bool) -> Data {
-        buildPacket(type: .command, cmd: .toggleIMU, data: Data([enable ? 0x01 : 0x00]))
+        buildPacket(type: .command, cmd: .toggleIMU, data: Data([0x01, enable ? 0x01 : 0x00]))
     }
 
     // MARK: - History Download Protocol
@@ -458,6 +464,14 @@ struct WhoopProtocol {
 
     static func startRawOpticalPacket() -> Data {
         buildPacket(type: .command, cmd: .startRawData, data: Data([0x00]))
+    }
+
+    /// START_RAW_DATA precursor for the IMU stream. Hardware-verified payload is
+    /// [0x01] (ryanbr/noop PR #1709): "opcode 106 alone acknowledges but does not
+    /// start the producer. START_RAW_DATA must precede the two-byte realtime IMU
+    /// selector." Distinct from startRawOpticalPacket ([0x00]) which targets PPG.
+    static func startRawDataForIMUPacket() -> Data {
+        buildPacket(type: .command, cmd: .startRawData, data: Data([0x01]))
     }
 
     static func stopRawOpticalPacket() -> Data {
