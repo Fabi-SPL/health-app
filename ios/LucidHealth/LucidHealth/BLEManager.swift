@@ -3371,7 +3371,7 @@ extension BLEManager: CBPeripheralDelegate {
 
     /// Mirror intake events into food_entries so they show up in the Food tab.
     /// Type drives default kcal/NOVA/flags. Freeform name is preserved verbatim
-    /// — Lucid AI canonicalizes server-side.
+    /// — the server canonicalizes.
     private func mirrorIntakeToFoodEntries(name: String, at: Date, type: String) async {
         let isAlcohol = (type == "alcohol")
         let isSupplement = (type == "supplement")
