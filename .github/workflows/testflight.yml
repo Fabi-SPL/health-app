@@ -59,20 +59,26 @@ jobs:
           done
           [ -z "$MISSING" ] || { echo "ERROR: missing:$MISSING"; exit 1; }
 
-      # TestFlight groups builds under one version string. Unlike the AltStore
-      # path (which made a new 1.0.N "version" per build), MARKETING_VERSION
-      # stays fixed and the build number carries the increment - that is the
-      # model App Store Connect actually expects.
+      # The build number is the only thing TestFlight orders builds by, so it
+      # must never go backwards. Ask App Store Connect for the highest build
+      # already uploaded and go one past it (or the commit count, whichever is
+      # larger). If the lookup fails we stop rather than guess low - a lower
+      # number silently never reaches the phone.
       - name: Derive build number
         if: steps.guard.outputs.ready == 'true'
         env:
-          SUPABASE_STORAGE_PUBLIC_BASE: ${{ vars.SUPABASE_STORAGE_PUBLIC_BASE }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: |
+          set -o pipefail
           COMMITS=$(git rev-list --count HEAD)
-          SRC="${SUPABASE_STORAGE_PUBLIC_BASE}/altstore-source.json"
-          JQ='[.apps[] | select(.bundleIdentifier == "com.fabi.lucidhealth") | .buildVersion | tonumber] | first // 0'
-          PUBLISHED=$(curl -fsS --max-time 20 "$SRC" | jq -r "$JQ") || PUBLISHED=0
-          case "$PUBLISHED" in ''|*[!0-9]*) PUBLISHED=0 ;; esac
+          export ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_derive.p8"
+          printf '%s' "$ASC_KEY_P8" > "$ASC_KEY_PATH"
+          APP=$(node scripts/asc.mjs raw GET "/v1/apps?filter[bundleId]=com.fabi.lucidhealth&fields[apps]=bundleId"             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const a=JSON.parse(s).data[0];if(!a)process.exit(1);console.log(a.id)})')
+          PUBLISHED=$(node scripts/asc.mjs raw GET "/v1/builds?filter[app]=${APP}&limit=200&fields[builds]=version"             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(Math.max(0,...JSON.parse(s).data.map(b=>parseInt(b.attributes.version,10)||0))))')
+          rm -f "$ASC_KEY_PATH"
+          case "$PUBLISHED" in ''|*[!0-9]*) echo "ERROR: could not read published builds from App Store Connect (got '$PUBLISHED')"; exit 1 ;; esac
           if [ "$COMMITS" -gt "$PUBLISHED" ]; then BUILD_NUM=$COMMITS; else BUILD_NUM=$((PUBLISHED + 1)); fi
           echo "BUILD_NUM=${BUILD_NUM}" >> $GITHUB_ENV
           echo "commits=${COMMITS} published=${PUBLISHED} -> build ${BUILD_NUM}"
