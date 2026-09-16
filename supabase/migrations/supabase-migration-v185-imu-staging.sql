@@ -1,0 +1,465 @@
+-- v185 — sleep staging reads the real accelerometer (2026-09-16, deployed)
+--
+-- whoop_imu started receiving type-51 IMU rows with build 192 (cmd 106 [1,1]).
+-- Until now detect_sleep_window guessed movement from within-minute HR jitter
+-- (hr_sd >= 3), whose named failure mode was "quiet wake lying still is scored
+-- as sleep". This version:
+--   * aggregates whoop_imu per minute (imu_move_avg / imu_move_max, coverage n)
+--   * 'moving' = IMU evidence when >= 20 s of the minute is covered, hr_sd fallback
+--   * a sustained movement burst (avg >= 0.15) + HR >= floor+6 is awake outright
+--   * deepcand additionally requires NOT moving
+-- With whoop_imu empty the output is bit-identical to v184 (verified on the
+-- nights of Sep 14/15/16 before/after deploy). Thresholds are first-guess;
+-- recalibrate from the first real night's histogram.
+
+CREATE OR REPLACE FUNCTION public.detect_sleep_window(p_user_id uuid, p_target_date date, p_user_tz text DEFAULT 'Europe/Berlin'::text)
+ RETURNS TABLE(o_sleep_start timestamp with time zone, o_sleep_end timestamp with time zone, o_total_min integer, o_asleep_min integer, o_deep_min integer, o_rem_min integer, o_light_min integer, o_awake_min integer, o_efficiency_pct integer, o_hrv_avg numeric, o_resting_hr integer)
+ LANGUAGE plpgsql
+ STABLE
+ SET search_path TO 'public', 'extensions', 'pg_temp'
+AS $function$
+DECLARE
+  win_start timestamptz := ((p_target_date - 1)::text || ' 19:00:00')::timestamp AT TIME ZONE p_user_tz;
+  win_end   timestamptz := (p_target_date::text     || ' 12:00:00')::timestamp AT TIME ZONE p_user_tz;
+  sleep_thresh int := 65;
+  wake_thresh  int := 79;
+  deep_ceiling int := 54;
+  rem_sd_min   numeric := 3.0;
+  bridge_max   int := 20;
+  rhr_floor    int := 35;
+  resp_thresh  numeric := 21.0;
+  resp_sleep_thresh numeric := 21.0;
+  is_alcohol   boolean := false;
+  night_p05    int := NULL;   -- v151: night's own HR floor, drives adaptive thresholds
+  adj          int := 0;      -- v151: scaled margin above the floor
+  calm_low_run int := 0;      -- v169: longest sustained calm-low block (min); false-onset gate
+  gap_fill_max int := 45;     -- v170: max missing-minute run counted as sleep (BLE dropout, not blackout)
+  deep_cap     numeric := 0.20;  -- v176: physiological deep cap, pre-smoothing
+  deep_time_k  numeric := 1.8;   -- v176: bpm-equivalent penalty per hour since onset
+  min_rem_bout int := 5;         -- v176
+  min_deep_bout int := 5;        -- v176
+  rem_density  numeric := 0.30;  -- v176: REM fraction over +/-5 min that sustains a REM bout
+  deep_density numeric := 0.50;  -- v176: deep fraction over +/-3 min that sustains a deep bout
+  eff_ceiling  int := 97;        -- v176
+BEGIN
+  SELECT detect_overnight_alcohol(p_user_id, p_target_date, p_user_tz) INTO is_alcohol;
+  IF is_alcohol THEN
+    sleep_thresh := 75;
+    wake_thresh  := 89;
+    deep_ceiling := 62;
+    rhr_floor    := 40;
+    resp_thresh  := 99;
+  END IF;
+
+  -- v151: ADAPTIVE FLOOR. The absolute sleep_thresh goes blind whenever the sleeping HR
+  -- floor is elevated for ANY reason (alcohol the flag missed, heat, stress, illness).
+  -- Track the night's OWN 5th-percentile HR + a fixed margin instead. Sober nights are
+  -- byte-identical; only elevated nights lift.
+  SELECT round(percentile_cont(0.05) WITHIN GROUP (ORDER BY heart_rate))::int
+    INTO night_p05
+  FROM realtime_health
+  WHERE user_id = p_user_id
+    AND recorded_at >= win_start AND recorded_at < win_end
+    AND heart_rate IS NOT NULL AND heart_rate > 30;
+
+  IF night_p05 IS NOT NULL THEN
+    adj := 12 + GREATEST(0, night_p05 - 54);
+    sleep_thresh := GREATEST(sleep_thresh, LEAST(80, night_p05 + adj));
+    wake_thresh  := GREATEST(wake_thresh,  LEAST(94, night_p05 + adj + 14));
+    deep_ceiling := GREATEST(deep_ceiling, night_p05 + 4);
+  END IF;
+
+  -- v169: FALSE-ONSET GATE. Real sleep contains a SUSTAINED block that is both LOW and
+  -- STABLE. Under 15 min of that on a sober night means there is no real sleep in the
+  -- window -> emit nothing rather than manufacture one from the awake evening.
+  IF NOT is_alcohol THEN
+    WITH mb AS (
+      SELECT date_trunc('minute', recorded_at) AS m,
+             AVG(heart_rate)::numeric AS hr,
+             COALESCE(stddev_samp(heart_rate), 0)::numeric AS sd
+      FROM realtime_health
+      WHERE user_id = p_user_id
+        AND recorded_at >= win_start AND recorded_at < win_end
+        AND heart_rate IS NOT NULL AND heart_rate > 30
+      GROUP BY date_trunc('minute', recorded_at)
+    ),
+    sm AS (
+      SELECT m, AVG(hr) OVER (ORDER BY m ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS hrs, sd
+      FROM mb
+    ),
+    fl AS (
+      SELECT m, CASE WHEN hrs < night_p05 + 6 AND sd < 4 THEN 1 ELSE 0 END AS islow
+      FROM sm
+    ),
+    lg AS (
+      SELECT m, islow, LAG(islow, 1, islow) OVER (ORDER BY m) AS prev FROM fl
+    ),
+    gp AS (
+      SELECT m, islow, SUM(CASE WHEN islow != prev THEN 1 ELSE 0 END) OVER (ORDER BY m) AS gid FROM lg
+    )
+    SELECT COALESCE(MAX(cnt), 0) INTO calm_low_run
+    FROM (SELECT gid, COUNT(*) AS cnt FROM gp WHERE islow = 1 GROUP BY gid) z;
+
+    IF calm_low_run < 15 THEN
+      RETURN;   -- no sustained sleep block -> no window
+    END IF;
+  END IF;
+
+  RETURN QUERY
+  WITH minute_buckets AS (
+    SELECT
+      date_trunc('minute', recorded_at) AS m_ts,
+      AVG(heart_rate)::numeric AS hr_avg,
+      stddev_samp(heart_rate)::numeric AS hr_sd,
+      AVG(hrv_rmssd)::numeric AS hrv_avg,
+      AVG(respiratory_rate) FILTER (WHERE respiratory_rate > 0 AND respiratory_rate < 24)::numeric AS resp_avg
+    FROM realtime_health
+    WHERE user_id = p_user_id
+      AND recorded_at >= win_start
+      AND recorded_at <  win_end
+      AND heart_rate IS NOT NULL
+      AND heart_rate > 30
+    GROUP BY date_trunc('minute', recorded_at)
+  ),
+  imu_minutes AS (
+    -- v185: real motion evidence. whoop_imu.movement_score is |accel - 1g| / 2g
+    -- per second (0 = dead still). A minute only counts as covered when at
+    -- least 20 of its seconds reported, so a lone packet can't flag a minute.
+    SELECT
+      date_trunc('minute', recorded_at) AS m_ts,
+      AVG(movement_score)::numeric  AS imu_move_avg,
+      MAX(movement_score)::numeric  AS imu_move_max,
+      COUNT(*)                      AS imu_n
+    FROM whoop_imu
+    WHERE user_id = p_user_id
+      AND recorded_at >= win_start
+      AND recorded_at <  win_end
+    GROUP BY date_trunc('minute', recorded_at)
+  ),
+  smoothed AS (
+    SELECT m_ts, hr_avg, COALESCE(hr_sd, 0) AS hr_sd, hrv_avg,
+      AVG(hr_avg) OVER (ORDER BY m_ts ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS hr_smooth,
+      AVG(resp_avg) OVER (ORDER BY m_ts ROWS BETWEEN 7 PRECEDING AND 7 FOLLOWING) AS resp_smooth
+    FROM minute_buckets
+  ),
+  flagged AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth,
+      CASE WHEN hr_smooth < sleep_thresh THEN 1 ELSE 0 END AS raw_is_sleep
+    FROM smoothed
+  ),
+  with_lag AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth, raw_is_sleep,
+      LAG(raw_is_sleep, 1, raw_is_sleep) OVER (ORDER BY m_ts) AS prev_is_sleep
+    FROM flagged
+  ),
+  runs AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth, raw_is_sleep,
+      SUM(CASE WHEN raw_is_sleep != prev_is_sleep THEN 1 ELSE 0 END)
+        OVER (ORDER BY m_ts) AS run_id
+    FROM with_lag
+  ),
+  run_lengths AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth, raw_is_sleep, run_id,
+      COUNT(*) OVER (PARTITION BY run_id) AS run_length
+    FROM runs
+  ),
+  bridged AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth,
+      CASE
+        WHEN raw_is_sleep = 1 THEN 1
+        WHEN run_length < bridge_max THEN 1
+        ELSE 0
+      END AS is_sleep
+    FROM run_lengths
+  ),
+  islands AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth, is_sleep,
+      SUM(CASE WHEN is_sleep = 0 THEN 1 ELSE 0 END)
+        OVER (ORDER BY m_ts) AS gap_id
+    FROM bridged
+  ),
+  sleep_islands AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth,
+      gap_id - 1 AS island_id
+    FROM islands
+    WHERE is_sleep = 1
+  ),
+  longest_island AS (
+    SELECT island_id
+    FROM sleep_islands
+    GROUP BY island_id
+    ORDER BY COUNT(*) DESC
+    LIMIT 1
+  ),
+  island_minutes AS (
+    SELECT s.m_ts, s.hr_avg, s.hr_sd, s.hrv_avg, s.hr_smooth, sm.resp_smooth
+    FROM sleep_islands s
+    JOIN longest_island li ON s.island_id = li.island_id
+    JOIN smoothed sm ON sm.m_ts = s.m_ts
+  ),
+  island_fwd AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth,
+      AVG(CASE WHEN resp_smooth < resp_thresh THEN 1.0 ELSE 0.0 END)
+        FILTER (WHERE resp_smooth IS NOT NULL)
+        OVER (ORDER BY m_ts ROWS BETWEEN CURRENT ROW AND 19 FOLLOWING) AS fwd_low_frac
+    FROM island_minutes
+  ),
+  onset_anchor AS (
+    SELECT COALESCE(
+      MIN(m_ts) FILTER (WHERE fwd_low_frac >= 0.6 AND hr_smooth < sleep_thresh),
+      MIN(m_ts)
+    ) AS real_onset
+    FROM island_fwd
+  ),
+  sleep_minutes AS (
+    SELECT im.m_ts, im.hr_avg, im.hr_sd, im.hrv_avg, im.hr_smooth
+    FROM island_minutes im, onset_anchor oa
+    WHERE im.m_ts >= oa.real_onset
+  ),
+  night_floor AS (
+    SELECT percentile_cont(0.10) WITHIN GROUP (ORDER BY hr_smooth) AS floor_hr
+    FROM sleep_minutes
+  ),
+  wake_tail AS (
+    SELECT sm.m_ts, sm.hr_smooth, nf.floor_hr,
+      AVG(CASE WHEN sm.hr_smooth >= nf.floor_hr + 9 THEN 1.0 ELSE 0.0 END)
+        OVER (ORDER BY sm.m_ts ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS tail_hi,
+      COUNT(*)
+        OVER (ORDER BY sm.m_ts ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS tail_n
+    FROM sleep_minutes sm CROSS JOIN night_floor nf
+  ),
+  wake_anchor AS (
+    SELECT COALESCE(
+      MIN(m_ts) FILTER (
+        WHERE tail_hi >= 0.55 AND tail_n >= 15
+          AND hr_smooth >= floor_hr + 9
+          AND m_ts >= (SELECT MIN(m_ts) FROM sleep_minutes) + interval '4 hours'
+      ),
+      (SELECT MAX(m_ts) FROM sleep_minutes) + interval '1 minute'
+    ) AS real_wake
+    FROM wake_tail
+  ),
+  core_minutes AS (
+    SELECT sm.* FROM sleep_minutes sm, wake_anchor wa
+    WHERE sm.m_ts < wa.real_wake
+  ),
+  onset0 AS (
+    SELECT MIN(m_ts) AS ms FROM core_minutes
+  ),
+  pre_cand AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth, is_presleep,
+      AVG(is_presleep::numeric) OVER (ORDER BY m_ts ROWS BETWEEN 4 PRECEDING AND 4 FOLLOWING) AS ps_frac
+    FROM (
+      SELECT sm.m_ts, sm.hr_avg, sm.hr_sd, sm.hrv_avg, sm.hr_smooth,
+        CASE WHEN sm.hr_smooth < wake_thresh AND sm.resp_smooth IS NOT NULL
+                  AND sm.resp_smooth < resp_sleep_thresh THEN 1 ELSE 0 END AS is_presleep
+      FROM smoothed sm, onset0 o
+      WHERE NOT is_alcohol
+        AND sm.m_ts <  o.ms
+        AND sm.m_ts >= o.ms - interval '4 hours'
+    ) q
+  ),
+  pre_break AS (
+    SELECT MAX(m_ts) AS bk FROM pre_cand WHERE ps_frac < 0.5
+  ),
+  prepend_minutes AS (
+    SELECT pc.m_ts, pc.hr_avg, pc.hr_sd, pc.hrv_avg, pc.hr_smooth
+    FROM pre_cand pc, pre_break pb
+    WHERE pc.is_presleep = 1
+      AND (pb.bk IS NULL OR pc.m_ts > pb.bk)
+  ),
+  final_minutes AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth FROM core_minutes
+    UNION ALL
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth FROM prepend_minutes
+  ),
+  fm_enriched AS (
+    -- v185: 'moving' is accelerometer-based when the minute has IMU coverage,
+    -- HR-jitter otherwise -- so nights before the IMU stream existed (and any
+    -- BLE gap) stage exactly as v184 did. Thresholds are first-guess until a
+    -- night of real IMU data lands; recalibrate from the histogram then.
+    SELECT fm.m_ts, fm.hr_avg, fm.hr_sd, fm.hrv_avg, fm.hr_smooth,
+           sm.resp_smooth, nf.floor_hr,
+           CASE WHEN COALESCE(im.imu_n, 0) >= 20
+                THEN (im.imu_move_avg >= 0.05 OR im.imu_move_max >= 0.30)
+                ELSE fm.hr_sd >= 3
+           END AS moving,
+           COALESCE(im.imu_n >= 20 AND im.imu_move_avg >= 0.15, false) AS moving_hard
+    FROM final_minutes fm
+    LEFT JOIN smoothed sm ON sm.m_ts = fm.m_ts
+    LEFT JOIN imu_minutes im ON im.m_ts = fm.m_ts
+    CROSS JOIN night_floor nf
+  ),
+  -- v184: hi_frac is taken on the RAW minute, not the 5-min smoothed value. Smoothing
+  -- twice (hr_smooth, then a 5-min majority of it) turned a 2-minute roll-over into
+  -- 5-7 minutes of 'awake'. v185: mov_ct now counts real accelerometer minutes
+  -- when the IMU stream covers them, HR jitter only as fallback.
+  awake_flagged AS (
+    SELECT fe.*,
+      AVG(CASE WHEN hr_avg >= COALESCE(floor_hr, 999) + 9 THEN 1.0 ELSE 0.0 END)
+        OVER (ORDER BY m_ts ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS hi_frac,
+      SUM(CASE WHEN moving THEN 1 ELSE 0 END)
+        OVER (ORDER BY m_ts ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS mov_ct
+    FROM fm_enriched fe
+  ),
+  staged1 AS (
+    SELECT aw.*,
+      CASE
+        -- v184: a soft-awake call (floor+9) needs movement in 2 of 5 minutes, or an
+        -- unambiguous floor+14. Calm, elevated, steady-breathing minutes are sleep.
+        WHEN hr_smooth > wake_thresh
+          OR (hi_frac >= 0.5 AND (mov_ct >= 2 OR hr_smooth >= COALESCE(floor_hr, 999) + 14))
+          -- v185: a sustained movement burst with any HR lift is awake, even
+          -- when the 5-min smoothed HR never clears wake_thresh (short wakings)
+          OR (moving_hard AND hr_avg >= COALESCE(floor_hr, 999) + 6) THEN 'awake'
+        WHEN hr_smooth < deep_ceiling AND hr_sd < 3
+             AND NOT moving
+             AND COALESCE(resp_smooth, 0) < 20 THEN 'deepcand'
+        WHEN hr_sd > rem_sd_min THEN 'rem'
+        ELSE 'light'
+      END AS s1
+    FROM awake_flagged aw
+  ),
+  asleep_ct AS (
+    SELECT count(*) FILTER (WHERE s1 <> 'awake') AS asleep_n,
+           MIN(m_ts) AS onset_ts
+    FROM staged1
+  ),
+  -- v176: rank deepcand minutes by HR PLUS a penalty for how late in the night they fall.
+  -- Ranking on raw HR alone put slow-wave sleep in the wrong half of the night, because
+  -- sleeping HR keeps drifting down until morning. deep_time_k is expressed in bpm per hour
+  -- since onset, so it competes on the same scale as the HR it corrects.
+  ranked AS (
+    SELECT s.*,
+      CASE WHEN s1 = 'deepcand'
+        THEN row_number() OVER (PARTITION BY (s1 = 'deepcand')
+                                ORDER BY (hr_smooth + deep_time_k
+                                          * (EXTRACT(epoch FROM (s.m_ts - (SELECT onset_ts FROM asleep_ct))) / 3600.0)) ASC,
+                                         hr_sd ASC)
+      END AS deep_rank
+    FROM staged1 s
+  ),
+  classified AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth,
+      CASE
+        WHEN s1 = 'awake' THEN 'awake'
+        WHEN s1 = 'rem'   THEN 'rem'
+        WHEN s1 = 'light' THEN 'light'
+        WHEN s1 = 'deepcand'
+             AND deep_rank <= floor(deep_cap * (SELECT asleep_n FROM asleep_ct)) THEN 'deep'
+        ELSE 'light'
+      END AS stage
+    FROM ranked
+  ),
+  -- v176: HYSTERESIS. The per-minute classifier has no memory, so a REM threshold crossing
+  -- lasting one minute became a REM "bout". Re-decide each minute from the local density of
+  -- its neighbours instead: a minute is REM if >= rem_density of the +/-5 min around it is
+  -- REM, deep if > deep_density of the +/-3 min around it is deep. Deep wins ties. 'awake' is
+  -- never rewritten -- brief awakenings are real and the efficiency denominator needs them.
+  sm_frac AS (
+    SELECT c.*,
+      AVG(CASE WHEN stage = 'deep' THEN 1.0 ELSE 0.0 END) FILTER (WHERE stage <> 'awake')
+        OVER (ORDER BY m_ts ROWS BETWEEN 3 PRECEDING AND 3 FOLLOWING) AS f_deep,
+      AVG(CASE WHEN stage = 'rem'  THEN 1.0 ELSE 0.0 END) FILTER (WHERE stage <> 'awake')
+        OVER (ORDER BY m_ts ROWS BETWEEN 5 PRECEDING AND 5 FOLLOWING) AS f_rem
+    FROM classified c
+  ),
+  smoothed_stage AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth,
+      CASE
+        WHEN stage = 'awake' THEN 'awake'
+        WHEN COALESCE(f_deep, 0) >  deep_density THEN 'deep'
+        WHEN COALESCE(f_rem,  0) >= rem_density  THEN 'rem'
+        ELSE 'light'
+      END AS stage
+    FROM sm_frac
+  ),
+  -- v176: MINIMUM BOUT. Anything that survives smoothing but still lasts under 5 minutes is
+  -- not a sleep cycle, it is noise. Demote to light.
+  bout_tagged AS (
+    SELECT z.*, SUM(CASE WHEN stage IS DISTINCT FROM prev THEN 1 ELSE 0 END)
+      OVER (ORDER BY m_ts) AS bout_id
+    FROM (SELECT s.*, LAG(stage) OVER (ORDER BY m_ts) AS prev FROM smoothed_stage s) z
+  ),
+  bout_len AS (
+    SELECT b.*, COUNT(*) OVER (PARTITION BY bout_id) AS blen FROM bout_tagged b
+  ),
+  final_stage AS (
+    SELECT m_ts, hr_avg, hr_sd, hrv_avg, hr_smooth,
+      CASE
+        WHEN stage = 'rem'  AND blen < min_rem_bout  THEN 'light'
+        WHEN stage = 'deep' AND blen < min_deep_bout THEN 'light'
+        ELSE stage
+      END AS stage
+    FROM bout_len
+  ),
+  -- v170: BLE-DROPOUT FILL. A missing minute is not an awake minute. Count a run of missing
+  -- minutes as sleep only when it is short enough to be a radio dropout (<= gap_fill_max) AND
+  -- is bracketed by asleep minutes on both sides. Filled minutes book as 'light'.
+  cls_bounds AS (
+    SELECT MIN(m_ts) AS ws, MAX(m_ts) AS we FROM final_stage
+  ),
+  all_min AS (
+    SELECT generate_series(ws, we, interval '1 minute') AS m_ts FROM cls_bounds
+  ),
+  miss AS (
+    SELECT a.m_ts FROM all_min a
+    LEFT JOIN final_stage c ON c.m_ts = a.m_ts
+    WHERE c.m_ts IS NULL
+  ),
+  miss_g AS (
+    SELECT m_ts,
+      (EXTRACT(epoch FROM m_ts)/60)::bigint - row_number() OVER (ORDER BY m_ts) AS grp
+    FROM miss
+  ),
+  miss_runs AS (
+    SELECT grp, COUNT(*)::int AS run_len, MIN(m_ts) AS gs, MAX(m_ts) AS ge
+    FROM miss_g GROUP BY grp
+  ),
+  gap_fill AS (
+    SELECT COALESCE(SUM(r.run_len), 0)::int AS fill_m
+    FROM miss_runs r
+    WHERE r.run_len <= gap_fill_max
+      AND (SELECT c.stage FROM final_stage c WHERE c.m_ts = r.gs - interval '1 minute') <> 'awake'
+      AND (SELECT c.stage FROM final_stage c WHERE c.m_ts = r.ge + interval '1 minute') <> 'awake'
+  ),
+  -- v176: SLEEP ONSET LATENCY. The prepend pass adds pre-onset drowsy minutes to the window
+  -- and they were being staged 'light', i.e. counted as time ASLEEP. They are time in bed
+  -- NOT asleep. Hold them in the efficiency denominator and out of its numerator. Capped at
+  -- 90 min so a pathological prepend cannot swallow the night.
+  latency AS (
+    SELECT LEAST(90, (
+      SELECT count(*) FROM final_stage f2, onset_anchor oa
+      WHERE f2.m_ts < oa.real_onset AND f2.stage <> 'awake'
+    ))::int AS lat_m
+  ),
+  totals AS (
+    SELECT
+      MIN(m_ts) AS w_start,
+      MAX(m_ts) + interval '1 minute' AS w_end,
+      COUNT(*) FILTER (WHERE stage = 'deep')::int  AS deep_m,
+      COUNT(*) FILTER (WHERE stage = 'rem')::int   AS rem_m,
+      COUNT(*) FILTER (WHERE stage = 'light')::int AS light_m,
+      COUNT(*) FILTER (WHERE stage = 'awake')::int AS awake_m,
+      AVG(hrv_avg) FILTER (WHERE hrv_avg > 0)::numeric AS hrv_mean,
+      percentile_cont(0.05) WITHIN GROUP (ORDER BY hr_avg)
+        FILTER (WHERE hr_avg > rhr_floor)::numeric AS rhr_p5
+    FROM final_stage
+  )
+  SELECT
+    t.w_start,
+    t.w_end,
+    EXTRACT(epoch FROM (t.w_end - t.w_start))::int / 60 AS total_min,
+    (t.deep_m + t.rem_m + t.light_m + gf.fill_m) AS asleep_min,
+    t.deep_m, t.rem_m, (t.light_m + gf.fill_m) AS light_m, t.awake_m,
+    CASE WHEN (t.deep_m + t.rem_m + t.light_m + gf.fill_m + t.awake_m) > 0
+         THEN LEAST(eff_ceiling,
+                GREATEST(0, ROUND((GREATEST(0, t.deep_m + t.rem_m + t.light_m + gf.fill_m - lt.lat_m)::numeric
+                     / (t.deep_m + t.rem_m + t.light_m + gf.fill_m + t.awake_m)) * 100)::int))
+         ELSE 0 END AS eff_pct,
+    ROUND(t.hrv_mean, 1) AS hrv_avg_out,
+    ROUND(t.rhr_p5)::int AS rhr_out
+  FROM totals t CROSS JOIN gap_fill gf CROSS JOIN latency lt
+  WHERE t.w_start IS NOT NULL;
+END;
+$function$

@@ -3149,20 +3149,26 @@ extension BLEManager: CBPeripheralDelegate {
             eventName = "WRIST_ON"
             DispatchQueue.main.async { self.isWorn = true }
             healthEngine.onWristOn()
+            // Wear state is ground truth for sleep staging and data-quality
+            // gates server-side; until v185 it never left the phone.
+            supabase.pushWhoopEvent(type: "wrist_on", rawBytes: packet.data)
         case WhoopEvent.wristOff.rawValue:
             eventName = "WRIST_OFF"
             DispatchQueue.main.async { self.isWorn = false }
             healthEngine.onWristOff()
             // Taking the strap off during the alarm is not ambiguous.
             stopAlarmIfRinging(reason: "wrist_off")
+            supabase.pushWhoopEvent(type: "wrist_off", rawBytes: packet.data)
         case WhoopEvent.chargingOn.rawValue:
             eventName = "CHARGING_ON"
             DispatchQueue.main.async { self.isCharging = true }
             // Strap went on the charger mid-alarm: he is up and done with it.
             stopAlarmIfRinging(reason: "charger")
+            supabase.pushWhoopEvent(type: "charging_on", rawBytes: packet.data)
         case WhoopEvent.chargingOff.rawValue:
             eventName = "CHARGING_OFF"
             DispatchQueue.main.async { self.isCharging = false }
+            supabase.pushWhoopEvent(type: "charging_off", rawBytes: packet.data)
         case WhoopEvent.temperatureLevel.rawValue:
             eventName = "TEMPERATURE"
             handleTemperatureEvent(packet)
@@ -3250,6 +3256,12 @@ extension BLEManager: CBPeripheralDelegate {
             // Keep last 24h
             let cutoff = Date().addingTimeInterval(-86400)
             skinTempHistory.removeAll { $0.time < cutoff }
+
+            // Event-17 temps only ever lived in app memory; the server got just
+            // the sparser type-49 path. Persist both so temp coverage improves.
+            supabase.pushWhoopEvent(type: "skin_temp_celsius",
+                                    data: ["celsius": temp, "via": "event17"],
+                                    rawBytes: packet.data)
 
             LucidLog.log("BLE", "Skin temp parsed: \(String(format: "%.1f", temp))°C")
         } else {
