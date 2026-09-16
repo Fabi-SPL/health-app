@@ -11,6 +11,11 @@
 -- With whoop_imu empty the output is bit-identical to v184 (verified on the
 -- nights of Sep 14/15/16 before/after deploy). Thresholds are first-guess;
 -- recalibrate from the first real night's histogram.
+--
+-- v185.1 (same day): movement is now scale-invariant -- |mag / night_median - 1|
+-- from the raw accel columns -- because the accelerometer LSB/g is disputed
+-- between RE sources (8192 vs 4096) and a wrong constant would have flagged a
+-- still wrist as moving all night. Re-verified bit-identical without IMU rows.
 
 CREATE OR REPLACE FUNCTION public.detect_sleep_window(p_user_id uuid, p_target_date date, p_user_tz text DEFAULT 'Europe/Berlin'::text)
  RETURNS TABLE(o_sleep_start timestamp with time zone, o_sleep_end timestamp with time zone, o_total_min integer, o_asleep_min integer, o_deep_min integer, o_rem_min integer, o_light_min integer, o_awake_min integer, o_efficiency_pct integer, o_hrv_avg numeric, o_resting_hr integer)
@@ -122,19 +127,30 @@ BEGIN
     GROUP BY date_trunc('minute', recorded_at)
   ),
   imu_minutes AS (
-    -- v185: real motion evidence. whoop_imu.movement_score is |accel - 1g| / 2g
-    -- per second (0 = dead still). A minute only counts as covered when at
-    -- least 20 of its seconds reported, so a lone packet can't flag a minute.
+    -- v185.1: real motion evidence, scale-invariant. The accelerometer LSB/g
+    -- is disputed between RE sources (8192 vs 4096), so absolute movement_score
+    -- can't be trusted until a real night calibrates it. Instead: a sleeping
+    -- night's median |accel| IS 1 g in whatever units the strap speaks, so
+    -- movement = |mag / night_median - 1| needs no scale at all.
+    -- A minute only counts as covered when >= 20 of its seconds reported.
+    WITH sec AS (
+      SELECT recorded_at,
+             sqrt((accel_x::float8)^2 + (accel_y::float8)^2 + (accel_z::float8)^2) AS mag
+      FROM whoop_imu
+      WHERE user_id = p_user_id
+        AND recorded_at >= win_start
+        AND recorded_at <  win_end
+    ), ref AS (
+      SELECT NULLIF(percentile_cont(0.5) WITHIN GROUP (ORDER BY mag), 0) AS g1 FROM sec
+    )
     SELECT
-      date_trunc('minute', recorded_at) AS m_ts,
-      AVG(movement_score)::numeric  AS imu_move_avg,
-      MAX(movement_score)::numeric  AS imu_move_max,
-      COUNT(*)                      AS imu_n
-    FROM whoop_imu
-    WHERE user_id = p_user_id
-      AND recorded_at >= win_start
-      AND recorded_at <  win_end
-    GROUP BY date_trunc('minute', recorded_at)
+      date_trunc('minute', s.recorded_at) AS m_ts,
+      AVG(abs(s.mag / r.g1 - 1))::numeric AS imu_move_avg,
+      MAX(abs(s.mag / r.g1 - 1))::numeric AS imu_move_max,
+      COUNT(*)                            AS imu_n
+    FROM sec s CROSS JOIN ref r
+    WHERE r.g1 IS NOT NULL
+    GROUP BY date_trunc('minute', s.recorded_at)
   ),
   smoothed AS (
     SELECT m_ts, hr_avg, COALESCE(hr_sd, 0) AS hr_sd, hrv_avg,
