@@ -145,6 +145,26 @@ jobs:
       # certificates on the portal by itself, using the API key. It does NOT
       # create the App Group - that one identifier has to exist already or the
       # widget target fails to sign.
+      # Every ephemeral runner mints a fresh "Created via API" development
+      # certificate during automatic signing and can never reuse it (the private
+      # key dies with the runner). At ~12 of them Apple refuses to issue more
+      # and the archive fails with "choose a certificate to revoke". Prune them
+      # all up front - this run makes its own new one seconds later.
+      - name: Prune stale CI development certificates
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          export ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_prune.p8"
+          printf '%s' "$ASC_KEY_P8" > "$ASC_KEY_PATH"
+          node scripts/asc.mjs raw GET "/v1/certificates?limit=50&fields[certificates]=certificateType,displayName"             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const c of JSON.parse(s).data)if(c.attributes.certificateType==="DEVELOPMENT"&&c.attributes.displayName==="Created via API")console.log(c.id)})'             | while read -r ID; do
+                echo "revoking stale CI cert $ID"
+                node scripts/asc.mjs raw DELETE "/v1/certificates/$ID" >/dev/null || true
+              done
+          rm -f "$ASC_KEY_PATH"
+
       - name: Archive (signed, automatic provisioning)
         if: steps.guard.outputs.ready == 'true'
         working-directory: ios/LucidHealth
