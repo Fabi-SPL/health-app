@@ -124,6 +124,22 @@ jobs:
           grep -E 'prefilledEmail|prefilledPassword|baseURL|anonKey|let userId' \
             ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift | sed 's/= ".*"/= "***"/' | head -8
 
+      - name: Gate - the baked-in login must actually sign in
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          SB_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+          SB_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SB_EMAIL: ${{ secrets.EE_TASKS_EMAIL }}
+          SB_PW: ${{ secrets.EE_TASKS_PASSWORD }}
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20             -X POST "$SB_URL/auth/v1/token?grant_type=password"             -H "apikey: $SB_KEY" -H "Content-Type: application/json"             -d "{\"email\":\"$SB_EMAIL\",\"password\":\"$SB_PW\"}")
+          echo "auth gate: HTTP $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "ERROR: the credentials baked into this build cannot sign in (HTTP $STATUS)."
+            echo "Refusing to ship a logged-out app. Fix EE_TASKS_EMAIL / EE_TASKS_PASSWORD / SUPABASE_ANON_KEY secrets."
+            exit 1
+          fi
+
       - name: Inject commit SHA + build date
         if: steps.guard.outputs.ready == 'true'
         run: |
