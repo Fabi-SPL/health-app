@@ -165,12 +165,18 @@ class SupabaseClient {
         onLog?(full)
     }
 
-    // Auth credentials — always read fresh from UserDefaults (lucidhealth sandbox)
+    // Auth credentials. The CI-injected constant is the source of truth — this is
+    // a one-man app, the login is baked into the build, so it must survive a
+    // sandbox wipe (signing-identity change) and a password rotation without ever
+    // asking Fabi to type anything. UserDefaults is only a fallback for dev builds
+    // where the placeholder was never replaced.
     private var email: String {
-        UserDefaults.standard.string(forKey: "lucidhealth_email") ?? ""
+        if Self.prefilledEmail != "BUILD_EMAIL" { return Self.prefilledEmail }
+        return UserDefaults.standard.string(forKey: "lucidhealth_email") ?? ""
     }
     private var password: String {
-        UserDefaults.standard.string(forKey: "lucidhealth_password") ?? ""
+        if Self.prefilledPassword != "BUILD_PASSWORD" { return Self.prefilledPassword }
+        return UserDefaults.standard.string(forKey: "lucidhealth_password") ?? ""
     }
 
     var isAuthenticated: Bool { accessToken != nil && tokenExpiry.map { Date() < $0 } ?? false }
