@@ -121,8 +121,9 @@ jobs:
             ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
           sed -i '' 's|"BUILD_USER_ID"|"${{ secrets.HERMES_USER_ID }}"|' \
             ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
-          grep -E 'prefilledEmail|prefilledPassword|baseURL|anonKey|let userId' \
-            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift | sed 's/= ".*"/= "***"/' | head -8
+          echo "Substitution applied. No value is echoed here: the old masked grep"
+          echo "was one Swift declaration change away from printing the password."
+          echo "The gate step below is what proves the injected login works."
 
       - name: Gate - the baked-in login must actually sign in
         if: steps.guard.outputs.ready == 'true'
@@ -260,10 +261,8 @@ jobs:
           fi
           echo "Uploaded. Apple processes it in 5-30 min, then it appears in TestFlight."
 
-      - name: Keep the IPA as an artifact
-        if: steps.guard.outputs.ready == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: LucidHealth-testflight-${{ env.BUILD_NUM }}
-          path: ${{ runner.temp }}/export/*.ipa
-          retention-days: 14
+      # No artifact upload. This repository is public and the archive carries the
+      # Supabase login in __TEXT, so an uploaded .ipa hands that credential to
+      # anyone who can read this repo's runs. TestFlight is the delivery path.
+      # Need a build by hand? Run with workflow_dispatch and pull it off the
+      # runner, or make the repo private first.
