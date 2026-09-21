@@ -152,6 +152,17 @@ class BLEManager: NSObject, ObservableObject {
     var debugPacketsThisSession: Int = 0
     let maxDebugPacketsPerSession: Int = 15000  // hard cap — prevents runaway volume
 
+    // v105 — the counters that end the blindfold. Every (type,cmd) the strap sends
+    // is counted in memory and shipped once per checkpoint, so "is type-43 arriving
+    // at all" is answerable from the server without the per-packet write flood that
+    // got whoop_packet_debug switched off in June (last row: 2026-06-04).
+    var packetKindCounts: [String: Int] = [:]
+    // Hex is uploaded only for the first frames of a (type,cmd) not yet seen this
+    // session. Hard-bounded, so the debug table stays readable instead of enormous.
+    private var hexSampledCounts: [String: Int] = [:]
+    private let maxHexSamplesPerKind = 2
+    private let maxHexSamplesPerSession = 80
+
     // v69 — realtime raw payload decimation. Push every Nth type-40 packet to
     // whoop_realtime_raw for offline correlation of undecoded data0/data1 fields.
     // HR arrives ~every 10s → every-6 decimation = roughly 1 row / minute.
@@ -1248,35 +1259,27 @@ class BLEManager: NSObject, ObservableObject {
             self.log("v101: TOGGLE_OPTICAL_MODE [1,1] (CMD 108)")
             p.writeValue(WhoopProtocol.toggleOpticalModePacket(enable: true), for: c, type: .withResponse)
         }
+        // v105 — order corrected to the on-device-verified recovery recipe in the
+        // wearable RE doc (§8): ENABLE_OPTICAL_DATA -> TOGGLE_OPTICAL_MODE ->
+        // TOGGLE_IMU_MODE -> START_RAW_DATA. v101 put 81 before 106, which is the
+        // one ordering the doc never observed working. 106 is the actual GEN_4
+        // enable; 81 is the WhoopLabs timed-capture window on top of it.
         bleQueue.asyncAfter(deadline: .now() + 3.6) { [weak self] in
-            self?.armRawStream(generation: armGen)
+            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+            self.log("v105: TOGGLE_IMU [0x01,0x01] (CMD 106)")
+            p.writeValue(WhoopProtocol.toggleIMUPacket(enable: true), for: c, type: .withResponse)
         }
         bleQueue.asyncAfter(deadline: .now() + 4.2) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v101: TOGGLE_IMU [0x01,0x01] (CMD 106)")
-            p.writeValue(WhoopProtocol.toggleIMUPacket(enable: true), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(type: "imu_enable_sent", data: ["seq": "107[1,1]->108[1,1]->81[u32 600000ms]->106[1,1]", "version": "v101"])
+            guard let self else { return }
+            self.armRawStream(generation: armGen)
+            self.supabase.pushWhoopEvent(type: "imu_enable_sent", data: ["seq": "107[1,1]->108[1,1]->106[1,1]->81[u32 600000ms]", "version": "v105"])
         }
 
-        // Empirical probes — send once on connect, log raw responses into whoop_events.
-        bleQueue.asyncAfter(deadline: .now() + 3.4) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v66 probe: GET_RESEARCH_PACKET (CMD 132)")
-            p.writeValue(WhoopProtocol.getResearchPacket(), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(type: "probe_sent_cmd_132", data: ["purpose": "research_packet"])
-        }
-        bleQueue.asyncAfter(deadline: .now() + 4.0) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v66 probe: Labrador data gen (CMD 124 on)")
-            p.writeValue(WhoopProtocol.labradorDataGenPacket(enable: true), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(type: "probe_sent_cmd_124", data: ["purpose": "labrador_data_gen_on"])
-        }
-        bleQueue.asyncAfter(deadline: .now() + 4.6) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v66 probe: Labrador filtered (CMD 139 on)")
-            p.writeValue(WhoopProtocol.labradorFilteredPacket(enable: true), for: c, type: .withResponse)
-            self.supabase.pushWhoopEvent(type: "probe_sent_cmd_139", data: ["purpose": "labrador_filtered_on"])
-        }
+        // v105 — probes 132 / 124 / 139 retired. They have returned the same constant
+        // on every connect for months (132 -> 0001010000, 124 and 139 -> 0a03000000)
+        // and the RE doc marks the labrador builders as dead code the official app
+        // never instantiates. All they did was write three rows per reconnect into
+        // whoop_events and crowd out the events worth reading.
         // v101 — the v68 probe copies of 107/108/81 are gone: they are now part
         // of the real enable sequence above, with the corrected payloads.
 
@@ -1295,7 +1298,12 @@ class BLEManager: NSObject, ObservableObject {
                 data: [
                     "imu_samples_this_session": self.imuSampleCount,
                     "debug_packets_captured": self.debugPacketsThisSession,
-                    "note": "if zero, CMD 106 did not enable IMU live streaming on this firmware"
+                    // v105 — the answer to "is the strap sending type-43 at all",
+                    // which no previous checkpoint could distinguish from "we
+                    // received it and failed to parse it".
+                    "packet_kinds": self.packetKindCounts,
+                    "code_version": BuildInfo.codeVersion,
+                    "note": "packet_kinds is every type/cmd seen this connection"
                 ]
             )
         }
@@ -2065,10 +2073,29 @@ class BLEManager: NSObject, ObservableObject {
     /// it open: the producer stops when the window expires, so re-arm every 8 min
     /// with a 10-min window while connected. The generation counter kills stale
     /// chains across reconnects and explicit IMU-off.
+    /// v105 — re-arms the raw window, and re-sends the optical + IMU enables with it.
+    /// The RE doc records a saturation latch that silently kills the whole raw
+    /// optical+IMU stream mid-session; the only observed recovery is re-sending the
+    /// full sequence (no reboot). v101 re-sent CMD 81 alone, which cannot clear it.
     private func armRawStream(generation: Int) {
         guard generation == rawArmGeneration, let p = peripheral, let c = cmdToStrap else { return }
-        log("v101: START_RAW_DATA 600000 ms (CMD 81) — raw window armed, re-arm in 8 min")
-        p.writeValue(WhoopProtocol.startRawDataPacket(durationMs: 600_000), for: c, type: .withResponse)
+        log("v105: re-enable raw stream (107 -> 108 -> 106 -> 81), re-arm in 8 min")
+        p.writeValue(WhoopProtocol.enableOpticalDataPacket(enable: true), for: c, type: .withResponse)
+        bleQueue.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, generation == self.rawArmGeneration,
+                  let p = self.peripheral, let c = self.cmdToStrap else { return }
+            p.writeValue(WhoopProtocol.toggleOpticalModePacket(enable: true), for: c, type: .withResponse)
+        }
+        bleQueue.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, generation == self.rawArmGeneration,
+                  let p = self.peripheral, let c = self.cmdToStrap else { return }
+            p.writeValue(WhoopProtocol.toggleIMUPacket(enable: true), for: c, type: .withResponse)
+        }
+        bleQueue.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self, generation == self.rawArmGeneration,
+                  let p = self.peripheral, let c = self.cmdToStrap else { return }
+            p.writeValue(WhoopProtocol.startRawDataPacket(durationMs: 600_000), for: c, type: .withResponse)
+        }
         bleQueue.asyncAfter(deadline: .now() + 480) { [weak self] in
             self?.armRawStream(generation: generation)
         }
@@ -2360,6 +2387,8 @@ extension BLEManager: CBCentralManagerDelegate {
         // so packet_debug rows from this connection group together cleanly.
         reSessionId = UUID().uuidString
         debugPacketsThisSession = 0
+        packetKindCounts.removeAll()
+        hexSampledCounts.removeAll()
         if debugPacketCapture {
             log("v68: debug packet capture ON — reSessionId=\(reSessionId.prefix(8))")
         }
@@ -2369,7 +2398,11 @@ extension BLEManager: CBCentralManagerDelegate {
         supabase.pushWhoopEvent(
             type: "build_info",
             data: [
-                "code_version": "v100",
+                // v105 — was the literal string "v100" for five builds, so every
+                // "which build is actually on the phone" check has been a guess.
+                "code_version": BuildInfo.codeVersion,
+                "commit": BuildInfo.commitHash,
+                "build_date": BuildInfo.buildDate,
                 "re_session_id": reSessionId
             ]
         )
@@ -2404,6 +2437,19 @@ extension BLEManager: CBCentralManagerDelegate {
 
         // v104 — drop any partially received frame. See didConnect.
         rxAssembly.removeAll()
+
+        // v105 — one row per connection saying exactly which packet kinds arrived.
+        // This is the measurement every IMU build since June has been missing.
+        supabase.pushWhoopEvent(
+            type: "packet_kinds_summary",
+            data: [
+                "re_session_id": reSessionId,
+                "code_version": BuildInfo.codeVersion,
+                "uptime": sessionUptimeText,
+                "imu_samples": imuSampleCount,
+                "kinds": packetKindCounts
+            ]
+        )
 
         // CRITICAL: reset history-sync flag on disconnect. If the strap drops
         // mid-history-download, finishHistoryDownload() never fires, and the
@@ -2762,8 +2808,18 @@ extension BLEManager: CBPeripheralDelegate {
     private func routePacket(_ packet: WhoopPacket, from characteristic: CBCharacteristic, raw: Data) {
         // v68 — log every parsed packet during debug sessions. Lets us hunt unknown
         // packet types that might carry PPG / SpO2 / skin temp / respiration.
-        if debugPacketCapture && debugPacketsThisSession < maxDebugPacketsPerSession {
+        // v105 — count everything (free), upload hex for the first frames of a kind
+        // we have not seen this session (bounded). The v68 version uploaded a row per
+        // packet, which is why the whole path was gated off behind a UserDefault that
+        // has been false since June — the counter kept incrementing and nothing was
+        // ever written, so every IMU hunt since has been run blind.
+        let kind = "t\(packet.type)/c\(packet.cmd)"
+        packetKindCounts[kind, default: 0] += 1
+        if debugPacketCapture,
+           debugPacketsThisSession < maxHexSamplesPerSession,
+           hexSampledCounts[kind, default: 0] < maxHexSamplesPerKind {
             debugPacketsThisSession += 1
+            hexSampledCounts[kind, default: 0] += 1
             let charName = characteristicName(characteristic.uuid)
             let hex = packet.data.prefix(1024).map { String(format: "%02x", $0) }.joined()
             supabase.pushPacketDebug(

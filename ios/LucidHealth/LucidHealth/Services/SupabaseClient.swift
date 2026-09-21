@@ -2183,7 +2183,11 @@ class SupabaseClient {
                          packetLength: Int,
                          dataHex: String,
                          note: String? = nil) {
-        guard Self.captureRawDebugStreams else { return }
+        // v105 — no longer gated on lucid_capture_raw_debug. That UserDefault has
+        // been false since June, so BLEManager counted packets it never uploaded and
+        // every "what is the strap sending" question came back empty. The volume
+        // problem is solved at the caller now: at most 2 hex rows per unseen
+        // (type,cmd) and 80 per session, instead of one row per packet.
         Task {
             do {
                 try await ensureAuth()
