@@ -31,6 +31,7 @@ enum WhoopCommand: UInt8 {
     case reportVersionInfo        = 7    // Returns firmware version string
     case setClock                 = 10   // SET_CLOCK (separate from GET at 11)
     case getClock                 = 11
+    case abortHistoricalTransmits = 20   // stop an in-progress offload WITHOUT trimming (RE doc, safe)
     case sendHistoricalData       = 22
     case historyAck               = 23
     case eraseHistory             = 25   // 0x19 ERASE_HISTORY — wipes the strap's internal flash buffer (DESTRUCTIVE)
@@ -387,6 +388,13 @@ struct WhoopProtocol {
                     data: Data([0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0x00]))
     }
 
+    /// ABORT_HISTORICAL_TRANSMITS (CMD 20). Ends an offload WITHOUT trimming the
+    /// strap's flash. The RE doc's read-only recipe is: capture, never ack, abort.
+    /// This is what a zero-record batch gets instead of an ack.
+    static func abortHistoricalTransmitsPacket() -> Data {
+        buildPacket(type: .command, cmd: .abortHistoricalTransmits, data: Data([0x00]))
+    }
+
     /// Acknowledge a history batch and request the next one
     /// - Parameter trim: The trim value from the META_HISTORY_END metadata
     static func historyAckPacket(trim: UInt32) -> Data {
@@ -470,6 +478,16 @@ struct WhoopProtocol {
     /// payloads therefore requested 0 ms and 1 ms of raw data: the strap ACKed,
     /// ran for that long, and went silent — which is why every
     /// stream_enable_checkpoint since v100 logged imu_samples_this_session: 0.
+    /// v106 — the single-byte payload v100 used. The u32-duration reading above is
+    /// what the RE doc says, but on THIS strap it is the one-byte form that has ever
+    /// produced a RAW_DATA_ON event: exactly one in five months, 2026-09-16 12:39:11,
+    /// inside the 93-minute window v100 was installed. Since v101 switched to the
+    /// u32, the strap has never confirmed raw data on again. Both are sent now and
+    /// the event says which one the firmware actually takes.
+    static func startRawDataLegacyPacket() -> Data {
+        buildPacket(type: .command, cmd: .startRawData, data: Data([0x01]))
+    }
+
     static func startRawDataPacket(durationMs: UInt32) -> Data {
         var d = Data(count: 4)
         d[0] = UInt8(durationMs & 0xFF)

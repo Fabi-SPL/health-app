@@ -237,6 +237,11 @@ class BLEManager: NSObject, ObservableObject {
     private var rxAssembly: [CBUUID: Data] = [:]
     // v101 — invalidates stale CMD-81 re-arm chains across reconnects.
     private var rawArmGeneration = 0
+    // v106 — the strap's own RAW_DATA_ON (event 46) is the only honest confirmation
+    // that CMD 81 was accepted. It has fired once in five months. Used to pick which
+    // payload form this firmware actually takes.
+    private var rawDataOnAt: Date?
+    private var historyBatchStartTotal = 0
 
     // Standard BLE Device Information Service (0x180A)
     private let deviceInfoServiceUUID = CBUUID(string: "180A")
@@ -1843,6 +1848,7 @@ class BLEManager: NSObject, ObservableObject {
         switch packet.cmd {
         case 1: // META_HISTORY_START
             historyBatchCount += 1
+            historyBatchStartTotal = historyBuffer.count
             log("History batch \(historyBatchCount) started")
             supabase.pushDebugLog(key: "history_sync_batch_start", value: "trigger=\(trigger) batch=\(historyBatchCount) running_total=\(historyBuffer.count)")
 
@@ -1866,9 +1872,25 @@ class BLEManager: NSObject, ObservableObject {
             let t8str = trim8.map { "\($0)" } ?? "nil"
             let t10str = trim10.map { "\($0)" } ?? "nil"
             supabase.pushDebugLog(key: "history_meta_raw", value: "trigger=\(trigger) batch=\(historyBatchCount) len=\(d.count) hex=\(metaHex) trim_at8=\(t8str) trim_at10=\(t10str)")
-            if let trim = trim10 ?? trim8 {
+            // v106 — the ack is a DESTRUCTIVE TRIM: it advances the strap's read
+            // pointer past everything the batch covered. Until now it was sent
+            // unconditionally, so every empty sync since 2026-09-20 17:00 trimmed a
+            // window it had received nothing from — eleven of them, each logging
+            // ack_trim with running_total=0. A batch that delivered no records is
+            // aborted instead (CMD 20, read-only), so nothing can be thrown away
+            // that we never got.
+            let deliveredThisBatch = historyBuffer.count - historyBatchStartTotal
+            if deliveredThisBatch == 0 && historyBuffer.isEmpty {
+                log("History batch \(historyBatchCount) ended EMPTY — aborting instead of trimming")
+                supabase.pushDebugLog(key: "history_sync_batch_empty_abort", value: "trigger=\(trigger) batch=\(historyBatchCount) would_have_trimmed=\(trim10 ?? trim8 ?? 0)")
+                if let p = peripheral, let c = cmdToStrap {
+                    p.writeValue(WhoopProtocol.abortHistoricalTransmitsPacket(), for: c, type: .withResponse)
+                }
+                historySyncTimer?.cancel(); historySyncTimer = nil
+                finishHistoryDownload()
+            } else if let trim = trim10 ?? trim8 {
                 log("History batch \(historyBatchCount) ended (trim10=\(t10str) trim8=\(t8str)), ACKing with \(trim)...")
-                supabase.pushDebugLog(key: "history_sync_batch_end", value: "trigger=\(trigger) batch=\(historyBatchCount) ack_trim=\(trim) running_total=\(historyBuffer.count)")
+                supabase.pushDebugLog(key: "history_sync_batch_end", value: "trigger=\(trigger) batch=\(historyBatchCount) ack_trim=\(trim) delivered=\(deliveredThisBatch) running_total=\(historyBuffer.count)")
                 if let p = peripheral, let c = cmdToStrap {
                     p.writeValue(WhoopProtocol.historyAckPacket(trim: trim), for: c, type: .withResponse)
                 }
@@ -2094,7 +2116,31 @@ class BLEManager: NSObject, ObservableObject {
         bleQueue.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self, generation == self.rawArmGeneration,
                   let p = self.peripheral, let c = self.cmdToStrap else { return }
+            let before = self.rawDataOnAt
             p.writeValue(WhoopProtocol.startRawDataPacket(durationMs: 600_000), for: c, type: .withResponse)
+            // v106 — if the u32 form does not produce RAW_DATA_ON within 3 s, send the
+            // one-byte form v100 used. Exactly one RAW_DATA_ON exists in five months of
+            // logs and it came from the one-byte form; the u32 has never produced one.
+            self.bleQueue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self, generation == self.rawArmGeneration,
+                      let p = self.peripheral, let c = self.cmdToStrap else { return }
+                if self.rawDataOnAt == before {
+                    p.writeValue(WhoopProtocol.startRawDataLegacyPacket(), for: c, type: .withResponse)
+                    self.bleQueue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                        guard let self else { return }
+                        self.supabase.pushWhoopEvent(type: "raw_enable_probe", data: [
+                            "u32_worked": false,
+                            "legacy_worked": self.rawDataOnAt != before,
+                            "code_version": BuildInfo.codeVersion
+                        ])
+                    }
+                } else {
+                    self.supabase.pushWhoopEvent(type: "raw_enable_probe", data: [
+                        "u32_worked": true, "legacy_worked": false,
+                        "code_version": BuildInfo.codeVersion
+                    ])
+                }
+            }
         }
         bleQueue.asyncAfter(deadline: .now() + 480) { [weak self] in
             self?.armRawStream(generation: generation)
@@ -3322,6 +3368,7 @@ extension BLEManager: CBPeripheralDelegate {
             supabase.pushWhoopEvent(type: "accel_saturation", rawBytes: packet.data)
         case WhoopEvent.rawDataOn.rawValue:
             eventName = "RAW_DATA_ON"
+            rawDataOnAt = Date()
             supabase.pushWhoopEvent(type: "raw_data_on", rawBytes: packet.data)
         case WhoopEvent.rawDataOff.rawValue:
             eventName = "RAW_DATA_OFF"
