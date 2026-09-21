@@ -2351,6 +2351,11 @@ extension BLEManager: CBCentralManagerDelegate {
         evt("ble_connected", "name=\(peripheral.name ?? "Whoop") batt=\(Int(battery))%")
         DispatchQueue.main.async { self.connectionState = .connected }
 
+        // v104 — a half-received frame from the previous link is not a prefix of
+        // this one. Carrying it over desynced the parser for the whole session,
+        // and history sync fires on exactly this event.
+        rxAssembly.removeAll()
+
         // v68 — new RE session. Regenerate session id and reset the packet counter
         // so packet_debug rows from this connection group together cleanly.
         reSessionId = UUID().uuidString
@@ -2396,6 +2401,9 @@ extension BLEManager: CBCentralManagerDelegate {
         log("   State at disconnect: HR=\(heartRate) battery=\(Int(battery))% sleep=\(healthEngine.sleepDetected) readings=\(readingsToday)")
         log("   Session uptime: \(sessionUptimeText)")
         evt("ble_disconnected", "reason=\(reason) code=\(errorCode) hr=\(heartRate) batt=\(Int(battery))% sleep=\(healthEngine.sleepDetected) uptime=\(sessionUptimeText)")
+
+        // v104 — drop any partially received frame. See didConnect.
+        rxAssembly.removeAll()
 
         // CRITICAL: reset history-sync flag on disconnect. If the strap drops
         // mid-history-download, finishHistoryDownload() never fires, and the
@@ -2683,13 +2691,26 @@ extension BLEManager: CBPeripheralDelegate {
             return
         }
 
+        // v104 — fast path first. v101 routed every notification through the
+        // reassembler, so a single stale residue byte desynced the whole stream.
+        // A notification that is already a complete frame is parsed as one, exactly
+        // as it was before v101; the buffer is only for genuine fragments.
+        let rawDeclaredTotal: Int? = raw.count >= 4
+            ? 4 + Int(UInt16(raw[raw.startIndex + 1]) | (UInt16(raw[raw.startIndex + 2]) << 8))
+            : nil
+        if rawDeclaredTotal == raw.count, let whole = WhoopProtocol.parsePacket(raw) {
+            rxAssembly[characteristic.uuid] = Data()   // any residue was junk
+            routePacket(whole, from: characteristic, raw: raw)
+            return
+        }
+
         // v101 — multi-notification reassembly. The old one-notification-one-packet
         // parse dropped every fragment of a large frame as "unparseable", so even a
         // correctly enabled raw stream (type-43, ~1.9 KB frames) was thrown away at
         // the door. Buffer per characteristic and cut complete frames off the front.
         var buf = rxAssembly[characteristic.uuid] ?? Data()
         buf.append(raw)
-        var parsedPackets: [WhoopPacket] = []
+        var parsedPackets: [(WhoopPacket, Data)] = []
         while !buf.isEmpty {
             if buf[buf.startIndex] != 0xAA {
                 if let sof = buf.firstIndex(of: 0xAA) {
@@ -2711,7 +2732,7 @@ extension BLEManager: CBPeripheralDelegate {
             let frame = Data(buf.prefix(total))
             buf.removeFirst(total)
             if let p = WhoopProtocol.parsePacket(frame) {
-                parsedPackets.append(p)
+                parsedPackets.append((p, frame))
             } else if debugPacketCapture && debugPacketsThisSession < maxDebugPacketsPerSession {
                 debugPacketsThisSession += 1
                 let hex = frame.prefix(1024).map { String(format: "%02x", $0) }.joined()
@@ -2729,8 +2750,10 @@ extension BLEManager: CBPeripheralDelegate {
         // A desynced stream must not grow the residue unbounded.
         rxAssembly[characteristic.uuid] = buf.count > 16384 ? Data() : buf
 
-        for packet in parsedPackets {
-            routePacket(packet, from: characteristic, raw: raw)
+        // v104 — route each packet with the bytes it actually came from, not the
+        // whole notification. Downstream handlers hex-log and store `raw`.
+        for (packet, frame) in parsedPackets {
+            routePacket(packet, from: characteristic, raw: frame)
         }
     }
 
