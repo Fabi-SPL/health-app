@@ -2825,7 +2825,11 @@ extension BLEManager: CBPeripheralDelegate {
             buf.removeFirst(total)
             if let p = WhoopProtocol.parsePacket(frame) {
                 parsedPackets.append((p, frame))
-            } else if debugPacketCapture && debugPacketsThisSession < maxDebugPacketsPerSession {
+            } else if debugPacketCapture && debugPacketsThisSession < maxHexSamplesPerSession {
+                // v107 — same 80-row session cap as the parsed path. A desynced
+                // stream produces an unparseable frame per notification, and the old
+                // 15000 cap would have written exactly the flood the June gate was
+                // put there to stop.
                 debugPacketsThisSession += 1
                 let hex = frame.prefix(1024).map { String(format: "%02x", $0) }.joined()
                 supabase.pushPacketDebug(
