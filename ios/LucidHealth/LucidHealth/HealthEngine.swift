@@ -57,6 +57,8 @@ class HealthEngine: ObservableObject {
     // Recovery
     @Published var recoveryScore: Double = 0
     @Published var recoveryLabel: String = "—"
+    /// False when the server has no measured night for today. The UI shows "—", never a 0% score.
+    @Published var lastNightHasData: Bool = true
     @Published var recoveryHRVContribution: Double = 0
     @Published var recoveryRHRContribution: Double = 0
     @Published var recoverySleepContribution: Double = 0
@@ -1092,18 +1094,27 @@ class HealthEngine: ObservableObject {
     /// main queue. Every call site used to wire recovery and sleepScore up by
     /// hand and drop sleepHours on the floor, which is how the sleep card stayed
     /// frozen at a stale value after a correct server recompute.
-    func applyServerRecompute(_ result: (recovery: Double, sleepScore: Double, sleepHours: Double, deepMin: Double, remMin: Double, lightMin: Double, awakeMin: Double)) {
-        // 0 is a valid recovery score (alcohol night, burnout). Only nil is no-data,
-        // and the caller's `if let` has already handled that.
-        if result.recovery >= 0 {
-            recoveryScore = round(result.recovery)
-            if result.recovery >= 67 { recoveryLabel = "Green" }
-            else if result.recovery >= 34 { recoveryLabel = "Yellow" }
-            else { recoveryLabel = "Red" }
-            UserDefaults.standard.set(result.recovery, forKey: recoveryScoreTodayKey)
+    func applyServerRecompute(_ result: SupabaseClient.ServerRecompute) {
+        // 0 is a valid recovery score (alcohol night, burnout). NULL is not: the
+        // strap recorded nothing, and printing that as 0% after a full night of
+        // sleep is the bug this guard exists for.
+        guard let recovery = result.lastNightRecovery else {
+            lastNightHasData = false
+            recoveryScore = 0
+            recoveryLabel = "—"
+            sleepScore = 0
+            sleepDurationHours = 0
+            UserDefaults.standard.removeObject(forKey: recoveryScoreTodayKey)
+            return
         }
+        lastNightHasData = true
+        recoveryScore = round(recovery)
+        if recovery >= 67 { recoveryLabel = "Green" }
+        else if recovery >= 34 { recoveryLabel = "Yellow" }
+        else { recoveryLabel = "Red" }
+        UserDefaults.standard.set(recovery, forKey: recoveryScoreTodayKey)
         if result.sleepScore > 0 { sleepScore = round(result.sleepScore) }
-        if result.sleepHours > 0 { sleepDurationHours = round(result.sleepHours * 10) / 10 }
+        if let hours = result.lastNightSleepHours, hours > 0 { sleepDurationHours = round(hours * 10) / 10 }
         // v-fix: server is authoritative for stage minutes since v176 — the
         // on-device live accumulator (SleepEngine.detectSleepStage) is a
         // real-time approximation only, and its ".light" fallback under

@@ -20,6 +20,7 @@ struct BodyBatteryHero: View {
     let recovery: Double       // demoted to secondary
     let sleepHours: Double
     let strain: Double         // 0..21
+    var hasNightData: Bool = true   // false = strap recorded no night; show "—", not 0
     var trend: [BodyBatteryPoint] = []   // 24h curve (server) — empty = hide chart
     var overlay: RecoveryOverlay = .neutral   // replaces the status chip when active
 
@@ -125,14 +126,15 @@ struct BodyBatteryHero: View {
             // headline), with the live "vs your normal" percentile beside it.
             HStack(spacing: 0) {
                 VStack(spacing: 4) {
-                    secondaryStat("recovery", "\(Int(recovery))", DS.Colors.recoveryColor(recovery))
-                    if recovery > 0 {
+                    secondaryStat("recovery", hasNightData ? "\(Int(recovery))" : "—",
+                                  hasNightData ? DS.Colors.recoveryColor(recovery) : DS.Colors.textFaint)
+                    if hasNightData && recovery > 0 {
                         PersonalPercentileChip(metric: "recovery_score", value: recovery)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 statDivider
-                secondaryStat("sleep", String(format: "%.1fh", sleepHours), DS.Colors.textSecondary)
+                secondaryStat("sleep", hasNightData ? String(format: "%.1fh", sleepHours) : "—", DS.Colors.textSecondary)
                 statDivider
                 secondaryStat("stress", stressLabel, DS.Colors.textSecondary)
             }

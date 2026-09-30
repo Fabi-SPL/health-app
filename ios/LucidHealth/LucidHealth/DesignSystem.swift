@@ -616,6 +616,7 @@ struct ScoreRing: View {
     var lineWidth: CGFloat = 4
     var color: Color = DS.Colors.success
     var label: String? = nil
+    var valueText: String? = nil
 
     var body: some View {
         ZStack {
@@ -635,7 +636,7 @@ struct ScoreRing: View {
 
             // Center text
             VStack(spacing: 0) {
-                Text("\(Int(score))")
+                Text(valueText ?? "\(Int(score))")
                     .font(.system(size: size * 0.32, weight: .heavy, design: .rounded))
                     .foregroundStyle(color)
                     .monospacedDigit()

@@ -121,7 +121,7 @@ struct WhoopPacket {
 }
 
 // MARK: - HR Reading
-struct HRReading {
+struct HRReading: Codable {
     let timestamp: UInt32
     let heartRate: UInt8
     let rrIntervals: [UInt16]  // in milliseconds
@@ -495,6 +495,11 @@ struct WhoopProtocol {
         d[2] = UInt8((durationMs >> 16) & 0xFF)
         d[3] = UInt8((durationMs >> 24) & 0xFF)
         return buildPacket(type: .command, cmd: .startRawData, data: d)
+    }
+
+    /// STOP_RAW_DATA with the payload the official app sends ([0x01], RE doc table row 82).
+    static func stopRawDataPacket() -> Data {
+        buildPacket(type: .command, cmd: .stopRawData, data: Data([0x01]))
     }
 
     static func stopRawOpticalPacket() -> Data {

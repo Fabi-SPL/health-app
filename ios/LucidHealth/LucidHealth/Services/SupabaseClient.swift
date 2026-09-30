@@ -578,8 +578,22 @@ class SupabaseClient {
     /// added because v176's server classifier is the only correct one — see
     /// applyServerRecompute in HealthEngine.swift for why they must overwrite
     /// stageMinutes instead of being dropped on the floor.
+    /// One recompute_health_metrics row. A nil lastNight* field is NULL on the server: the night has no data.
+    struct ServerRecompute {
+        let lastNightRecovery: Double?
+        let sleepScore: Double
+        let lastNightSleepHours: Double?
+        let deepMin: Double
+        let remMin: Double
+        let lightMin: Double
+        let awakeMin: Double
+        // BLEManager's log lines still read plain numbers; nothing renders these two.
+        var recovery: Double { lastNightRecovery ?? 0 }
+        var sleepHours: Double { lastNightSleepHours ?? 0 }
+    }
+
     @discardableResult
-    func recomputeHealthMetrics(date: Date = Date()) async -> (recovery: Double, sleepScore: Double, sleepHours: Double, deepMin: Double, remMin: Double, lightMin: Double, awakeMin: Double)? {
+    func recomputeHealthMetrics(date: Date = Date()) async -> ServerRecompute? {
         do {
             try await ensureAuth()
             guard let token = accessToken else { return nil }
@@ -619,9 +633,9 @@ class SupabaseClient {
             }
             guard let row = parsed else { return nil }
 
-            let recovery   = (row["recovery_score"]  as? NSNumber)?.doubleValue ?? 0
+            let recovery   = (row["recovery_score"]  as? NSNumber)?.doubleValue
             let sleepScore = (row["sleep_score"]     as? NSNumber)?.doubleValue ?? 0
-            let sleepHours = (row["sleep_hours"]      as? NSNumber)?.doubleValue ?? 0
+            let sleepHours = (row["sleep_hours"]      as? NSNumber)?.doubleValue
             // v176 already computes correct stage minutes server-side (13-23%
             // deep, 20-32% REM, validated over 30 real nights) — these four
             // fields used to be parsed into `row` and then discarded, which is
@@ -631,8 +645,9 @@ class SupabaseClient {
             let remMin     = (row["rem_sleep_min"]   as? NSNumber)?.doubleValue ?? 0
             let lightMin   = (row["light_sleep_min"] as? NSNumber)?.doubleValue ?? 0
             let awakeMin   = (row["awake_min"]       as? NSNumber)?.doubleValue ?? 0
-            log("recompute_health_metrics → recovery=\(Int(recovery)) sleepScore=\(Int(sleepScore)) sleepHours=\(sleepHours) D=\(Int(deepMin)) R=\(Int(remMin)) L=\(Int(lightMin)) A=\(Int(awakeMin))")
-            return (recovery, sleepScore, sleepHours, deepMin, remMin, lightMin, awakeMin)
+            log("recompute_health_metrics → recovery=\(recovery.map { String(Int($0)) } ?? "none") sleepScore=\(Int(sleepScore)) sleepHours=\(sleepHours.map { String($0) } ?? "none") D=\(Int(deepMin)) R=\(Int(remMin)) L=\(Int(lightMin)) A=\(Int(awakeMin))")
+            return ServerRecompute(lastNightRecovery: recovery, sleepScore: sleepScore, lastNightSleepHours: sleepHours,
+                                   deepMin: deepMin, remMin: remMin, lightMin: lightMin, awakeMin: awakeMin)
         } catch {
             log("recompute_health_metrics error: \(error.localizedDescription)")
             return nil

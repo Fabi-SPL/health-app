@@ -431,6 +431,7 @@ struct TodayView: View {
                 recovery: engine.recoveryScore,
                 sleepHours: engine.sleepDurationHours,
                 strain: engine.strainScore,
+                hasNightData: engine.lastNightHasData,
                 trend: bbTrend,
                 overlay: overlay
             )

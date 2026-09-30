@@ -148,6 +148,44 @@ class BLEManager: NSObject, ObservableObject {
     var cmdSweepEnabled: Bool {
         UserDefaults.standard.object(forKey: "cmd_sweep_enabled") as? Bool ?? false
     }
+    /// Opt-in only. On, the strap records raw IMU into history (see the v108 note in the connect path).
+    var rawCaptureEnabled: Bool {
+        UserDefaults.standard.object(forKey: "raw_imu_capture_enabled") as? Bool ?? false
+    }
+    /// History records the strap has already trimmed but the server has not confirmed yet.
+    private var carriedHistory: [HRReading] = []
+    private var pendingHistoryGen = 0
+    private var pendingHistoryURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("history_pending.json")
+    }
+
+    /// Written before every destructive ack, so a trim can never lose records the app dies holding.
+    private func savePendingHistory(_ records: [HRReading]) {
+        pendingHistoryGen += 1
+        let keep = records.count > 20_000 ? Array(records.suffix(20_000)) : records
+        guard let data = try? JSONEncoder().encode(keep) else { return }
+        try? data.write(to: pendingHistoryURL, options: .atomic)
+    }
+
+    /// Anything older than the finalizer's 96 h accept window is dropped here, so carried records can never
+    /// read as a stuck cursor and trip autoEraseStuckHistory.
+    private func loadPendingHistory() -> [HRReading] {
+        guard let data = try? Data(contentsOf: pendingHistoryURL),
+              let recs = try? JSONDecoder().decode([HRReading].self, from: data) else { return [] }
+        let floor = UInt32(max(0, Date().addingTimeInterval(-95 * 3600).timeIntervalSince1970))
+        let fresh = recs.filter { $0.timestamp >= floor }
+        if !fresh.isEmpty {
+            supabase.pushDebugLog(key: "history_pending_carried", value: "records=\(fresh.count) dropped_stale=\(recs.count - fresh.count)")
+        }
+        return fresh
+    }
+
+    private func clearPendingHistory(ifGen gen: Int) {
+        guard gen == pendingHistoryGen else { return }
+        try? FileManager.default.removeItem(at: pendingHistoryURL)
+    }
     var reSessionId: String = UUID().uuidString
     var debugPacketsThisSession: Int = 0
     let maxDebugPacketsPerSession: Int = 15000  // hard cap — prevents runaway volume
@@ -1247,37 +1285,59 @@ class BLEManager: NSObject, ObservableObject {
             self.log("v66: Requesting body location (CMD 84)")
             p.writeValue(WhoopProtocol.bodyLocationPacket(), for: c, type: .withResponse)
         }
-        // v101 — corrected raw-stream enable sequence. CMD 81's payload is a u32
-        // duration in ms (the strap's own cmd-81 response echoes a ms counter);
-        // v100's [0x01] asked for one millisecond of data, hence months of
-        // imu_samples_this_session: 0. Order per on-device RE: optical enables
-        // (107/108, two-byte like 106) → 81 with a real window → 106.
-        rawArmGeneration += 1
-        let armGen = rawArmGeneration
-        bleQueue.asyncAfter(deadline: .now() + 2.6) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v101: ENABLE_OPTICAL_DATA [1,1] (CMD 107)")
-            p.writeValue(WhoopProtocol.enableOpticalDataPacket(enable: true), for: c, type: .withResponse)
-        }
-        bleQueue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v101: TOGGLE_OPTICAL_MODE [1,1] (CMD 108)")
-            p.writeValue(WhoopProtocol.toggleOpticalModePacket(enable: true), for: c, type: .withResponse)
-        }
-        // v105 — order corrected to the on-device-verified recovery recipe in the
-        // wearable RE doc (§8): ENABLE_OPTICAL_DATA -> TOGGLE_OPTICAL_MODE ->
-        // TOGGLE_IMU_MODE -> START_RAW_DATA. v101 put 81 before 106, which is the
-        // one ordering the doc never observed working. 106 is the actual GEN_4
-        // enable; 81 is the WhoopLabs timed-capture window on top of it.
-        bleQueue.asyncAfter(deadline: .now() + 3.6) { [weak self] in
-            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
-            self.log("v105: TOGGLE_IMU [0x01,0x01] (CMD 106)")
-            p.writeValue(WhoopProtocol.toggleIMUPacket(enable: true), for: c, type: .withResponse)
-        }
-        bleQueue.asyncAfter(deadline: .now() + 4.2) { [weak self] in
-            guard let self else { return }
-            self.armRawStream(generation: armGen)
-            self.supabase.pushWhoopEvent(type: "imu_enable_sent", data: ["seq": "107[1,1]->108[1,1]->106[1,1]->81[u32 600000ms]", "version": "v105"])
+        // v108 — raw capture is OFF unless raw_imu_capture_enabled is set. Since v105
+        // (09-21) 106+81 in the working order made the strap flash 1917/1921-byte
+        // IMU records instead of 73/93-byte HR records: ~20x the size, a history
+        // backlog that sat a constant 35 h behind, and nights that never came back.
+        // The official app only enables 106/108 for its live view and sends 0 after.
+        if rawCaptureEnabled {
+            // v101 — corrected raw-stream enable sequence. CMD 81's payload is a u32
+            // duration in ms (the strap's own cmd-81 response echoes a ms counter);
+            // v100's [0x01] asked for one millisecond of data, hence months of
+            // imu_samples_this_session: 0. Order per on-device RE: optical enables
+            // (107/108, two-byte like 106) → 81 with a real window → 106.
+            rawArmGeneration += 1
+            let armGen = rawArmGeneration
+            bleQueue.asyncAfter(deadline: .now() + 2.6) { [weak self] in
+                guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+                self.log("v101: ENABLE_OPTICAL_DATA [1,1] (CMD 107)")
+                p.writeValue(WhoopProtocol.enableOpticalDataPacket(enable: true), for: c, type: .withResponse)
+            }
+            bleQueue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+                self.log("v101: TOGGLE_OPTICAL_MODE [1,1] (CMD 108)")
+                p.writeValue(WhoopProtocol.toggleOpticalModePacket(enable: true), for: c, type: .withResponse)
+            }
+            // v105 — order corrected to the on-device-verified recovery recipe in the
+            // wearable RE doc (§8): ENABLE_OPTICAL_DATA -> TOGGLE_OPTICAL_MODE ->
+            // TOGGLE_IMU_MODE -> START_RAW_DATA. v101 put 81 before 106, which is the
+            // one ordering the doc never observed working. 106 is the actual GEN_4
+            // enable; 81 is the WhoopLabs timed-capture window on top of it.
+            bleQueue.asyncAfter(deadline: .now() + 3.6) { [weak self] in
+                guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+                self.log("v105: TOGGLE_IMU [0x01,0x01] (CMD 106)")
+                p.writeValue(WhoopProtocol.toggleIMUPacket(enable: true), for: c, type: .withResponse)
+            }
+            bleQueue.asyncAfter(deadline: .now() + 4.2) { [weak self] in
+                guard let self else { return }
+                self.armRawStream(generation: armGen)
+                self.supabase.pushWhoopEvent(type: "imu_enable_sent", data: ["seq": "107[1,1]->108[1,1]->106[1,1]->81[u32 600000ms]", "version": "v105"])
+            }
+        } else {
+            rawArmGeneration += 1   // kills any re-arm chain from an earlier connect
+            bleQueue.asyncAfter(deadline: .now() + 2.6) { [weak self] in
+                guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+                p.writeValue(WhoopProtocol.stopRawDataPacket(), for: c, type: .withResponse)
+            }
+            bleQueue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+                p.writeValue(WhoopProtocol.toggleIMUPacket(enable: false), for: c, type: .withResponse)
+            }
+            bleQueue.asyncAfter(deadline: .now() + 3.4) { [weak self] in
+                guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+                p.writeValue(WhoopProtocol.toggleOpticalModePacket(enable: false), for: c, type: .withResponse)
+                self.supabase.pushWhoopEvent(type: "raw_capture_off_sent", data: ["seq": "82[1]->106[1,0]->108[1,0]", "version": "v108"])
+            }
         }
 
         // v105 — probes 132 / 124 / 139 retired. They have returned the same constant
@@ -1458,6 +1518,7 @@ class BLEManager: NSObject, ObservableObject {
                 self.isDownloadingHistory = true
                 DispatchQueue.main.async { self.isHistorySyncing = true }
                 self.historyBuffer.removeAll()
+                self.carriedHistory = self.loadPendingHistory()
                 self.historyBatchCount = 0
                 self.gapStartTime = self.manualBackfillWindowStart
                 self.gapEndTime = self.manualBackfillWindowEnd
@@ -1508,6 +1569,7 @@ class BLEManager: NSObject, ObservableObject {
         isDownloadingHistory = true
         DispatchQueue.main.async { self.isHistorySyncing = true }
         historyBuffer.removeAll()
+        carriedHistory = loadPendingHistory()
         historyBatchCount = 0
 
         DispatchQueue.main.async {
@@ -1603,8 +1665,11 @@ class BLEManager: NSObject, ObservableObject {
     /// Shared finalizer for both auto-reconnect and manual-72h paths.
     /// Uses real strap timestamps + dedups against pre-fetched minute set.
     private func finishHistoryWithDedup(trigger: String) {
-        let recordsFromStrap = historyBuffer
+        let recordsFromStrap = carriedHistory + historyBuffer
         historyBuffer.removeAll()
+        carriedHistory = []
+        savePendingHistory(recordsFromStrap)
+        let pendingGen = pendingHistoryGen
         let windowStart = isManualBackfillMode ? manualBackfillWindowStart : gapStartTime
         let windowEnd = isManualBackfillMode ? manualBackfillWindowEnd : gapEndTime
         let existingMinutes = manualBackfillExistingMinutes
@@ -1749,6 +1814,7 @@ class BLEManager: NSObject, ObservableObject {
             }
 
             guard !dedupedRecords.isEmpty else {
+                self.clearPendingHistory(ifGen: pendingGen)
                 if self.isManualBackfillMode {
                     DispatchQueue.main.async {
                         self.manualBackfillState = "done"
@@ -1767,6 +1833,7 @@ class BLEManager: NSObject, ObservableObject {
             }
 
             let result = await self.supabase.pushBackfillBatch(records: dedupedRecords)
+            if result.failed == 0 { self.clearPendingHistory(ifGen: pendingGen) }
             self.supabase.pushDebugLog(key: "history_sync_upload_result", value: "trigger=\(trigger) uploaded=\(result.uploaded) failed=\(result.failed)")
 
             // Replay successfully-uploaded readings through sleep detection so
@@ -1891,6 +1958,7 @@ class BLEManager: NSObject, ObservableObject {
             } else if let trim = trim10 ?? trim8 {
                 log("History batch \(historyBatchCount) ended (trim10=\(t10str) trim8=\(t8str)), ACKing with \(trim)...")
                 supabase.pushDebugLog(key: "history_sync_batch_end", value: "trigger=\(trigger) batch=\(historyBatchCount) ack_trim=\(trim) delivered=\(deliveredThisBatch) running_total=\(historyBuffer.count)")
+                savePendingHistory(carriedHistory + historyBuffer)
                 if let p = peripheral, let c = cmdToStrap {
                     p.writeValue(WhoopProtocol.historyAckPacket(trim: trim), for: c, type: .withResponse)
                 }

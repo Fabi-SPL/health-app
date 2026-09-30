@@ -90,6 +90,10 @@ extension HealthEngine {
                     return
                 }
                 self.applyServerRecompute(result)
+                guard result.lastNightRecovery != nil else {
+                    print("[Recovery] server has no measured night yet — day stays unlocked")
+                    return
+                }
                 print("[Recovery] v102 server recompute landed: \(Int(result.recovery))")
                 // Lock the day only now that a real server value has landed.
                 self.recoveryLockedDate = today

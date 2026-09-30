@@ -140,13 +140,14 @@ struct HealthView: View {
                     score: engine.recoveryScore,
                     size: 88,
                     lineWidth: 7,
-                    color: DS.Colors.recoveryColor(engine.recoveryScore),
-                    label: "RECOVERY"
+                    color: engine.lastNightHasData ? DS.Colors.recoveryColor(engine.recoveryScore) : DS.Colors.textFaint,
+                    label: "RECOVERY",
+                    valueText: engine.lastNightHasData ? nil : "—"
                 )
 
                 VStack(alignment: .leading, spacing: DS.Spacing.sm) {
                     StatusChip(
-                        text: engine.recoveryLabel.isEmpty ? "—" : engine.recoveryLabel,
+                        text: !engine.lastNightHasData ? "No data last night" : (engine.recoveryLabel.isEmpty ? "—" : engine.recoveryLabel),
                         style: engine.recoveryScore >= 67 ? .teal : (engine.recoveryScore >= 34 ? .amber : .danger)
                     )
 
