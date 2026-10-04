@@ -181,32 +181,111 @@ class SupabaseClient {
 
     var isAuthenticated: Bool { accessToken != nil && tokenExpiry.map { Date() < $0 } ?? false }
 
-    // Offline write queue — saves failed pushes to UserDefaults, flushes on next success
+    // Offline write queue — saves failed pushes, flushes on next success.
+    // v192 — JSON-lines file, was a 500-row UserDefaults array: at the real ~1 push/s that held
+    // 8 minutes and silently dropped the oldest reading on every new failure (10-02: "500 pending").
     private let queueKey = "lucid_offline_write_queue"
     private var isFlushingQueue = false
+    private let queueIO = DispatchQueue(label: "com.lucid.offlineQueue")
+    private let queueMaxBytes = 64 * 1024 * 1024  // ~40 h of 1 Hz readings
+    private var queueCount: Int?
+    private let queueURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("lucid_offline_write_queue.jsonl")
 
     init() {
         // Flush any queued writes from previous sessions
         Task { await flushOfflineQueue() }
     }
 
-    private func queueOfflineWrite(_ body: [String: Any], endpoint: String, extraHeaders: [String: String] = [:]) {
+    // Callers hold queueIO. Legacy UserDefaults rows are older, so they come first until the next flush commit.
+    private func readQueue() -> [[String: Any]] {
         var queue = UserDefaults.standard.array(forKey: queueKey) as? [[String: Any]] ?? []
+        if let data = try? Data(contentsOf: queueURL) {
+            for line in data.split(separator: UInt8(ascii: "\n")) {
+                if let entry = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any] { queue.append(entry) }
+            }
+        }
+        return queue
+    }
+
+    @discardableResult
+    private func writeQueue(_ queue: [[String: Any]]) -> Bool {
+        var data = Data()
+        for entry in queue {
+            guard let line = try? JSONSerialization.data(withJSONObject: entry) else { continue }
+            data.append(line)
+            data.append(UInt8(ascii: "\n"))
+        }
+        try? FileManager.default.createDirectory(at: queueURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard (try? data.write(to: queueURL, options: .atomic)) != nil else { return false }
+        UserDefaults.standard.removeObject(forKey: queueKey)
+        queueCount = queue.count
+        return true
+    }
+
+    private func queueOfflineWrite(_ body: [String: Any], endpoint: String, extraHeaders: [String: String] = [:], recordedAt: Date? = nil) {
+        var body = body
+        // v192 — keep the capture time on queued rows only; unstamped, a flush lands them all at
+        // flush time (10-02 13:00:37-51Z: 577 rows in 14 s) and hides the gap from fetchSyncCursor.
+        if let recordedAt, body["recorded_at"] == nil {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            body["recorded_at"] = iso.string(from: recordedAt)
+        }
         var entry: [String: Any] = ["body": body, "endpoint": endpoint, "ts": Date().timeIntervalSince1970]
         if !extraHeaders.isEmpty { entry["headers"] = extraHeaders }
-        queue.append(entry)
-        // Cap at 500 entries (~8 hours of 10s readings)
-        if queue.count > 500 { queue = Array(queue.suffix(500)) }
-        UserDefaults.standard.set(queue, forKey: queueKey)
-        log("Queued offline write (\(queue.count) pending)")
+        guard var line = try? JSONSerialization.data(withJSONObject: entry) else { return }
+        line.append(UInt8(ascii: "\n"))
+        let pending: Int? = queueIO.sync {
+            let size = (try? FileManager.default.attributesOfItem(atPath: queueURL.path)[.size] as? Int) ?? 0
+            guard size < queueMaxBytes else { return nil }
+            if let handle = try? FileHandle(forWritingTo: queueURL) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: line)
+            } else {
+                try? FileManager.default.createDirectory(at: queueURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? line.write(to: queueURL)
+            }
+            if let count = queueCount { queueCount = count + 1 } else { queueCount = readQueue().count }
+            return queueCount
+        }
+        guard let pending else {
+            log("OFFLINE QUEUE FULL (\(queueMaxBytes / 1_048_576) MB) — reading NOT queued")
+            return
+        }
+        log("Queued offline write (\(pending) pending)")
     }
 
     private func flushOfflineQueue() async {
-        guard !isFlushingQueue else { return }
-        isFlushingQueue = true
-        defer { isFlushingQueue = false }
+        // v192 — claim the single flusher slot atomically; commit() below relies on it
+        guard queueIO.sync(execute: { () -> Bool in
+            if isFlushingQueue { return false }
+            isFlushingQueue = true
+            return true
+        }) else { return }
+        defer { queueIO.sync { isFlushingQueue = false } }
 
-        guard var queue = UserDefaults.standard.array(forKey: queueKey) as? [[String: Any]], !queue.isEmpty else { return }
+        var queue = queueIO.sync { readQueue() }
+        guard !queue.isEmpty else { return }
+        var snapshotCount = queue.count
+        var inFlight: [String: Any]?
+        // v192 — keep rows appended during this flush (they sit past snapshotCount; the old whole-array
+        // write-back erased them) and save progress on error too, so sent rows are not re-sent.
+        // Also checkpointed every 500 sends: a flush killed mid-way re-sent every row (no unique key).
+        func commit() {
+            if let entry = inFlight { queue.insert(entry, at: 0); inFlight = nil }
+            let pending = queue
+            let skip = snapshotCount
+            let written: [[String: Any]]? = queueIO.sync {
+                let merged = pending + readQueue().dropFirst(skip)
+                return writeQueue(merged) ? merged : nil
+            }
+            if let written {
+                queue = written
+                snapshotCount = written.count
+            }
+        }
 
         do {
             try await ensureAuth()
@@ -230,7 +309,9 @@ class SupabaseClient {
                 }
                 request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+                inFlight = entry
                 let (_, response) = try await session.data(for: request)
+                inFlight = nil
                 let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
 
                 if statusCode == 401 || statusCode == 403 {
@@ -261,16 +342,23 @@ class SupabaseClient {
                     continue
                 }
                 flushed += 1
+                if flushed % 500 == 0 { commit() }
             }
 
-            UserDefaults.standard.set(queue, forKey: queueKey)
+            commit()
             if flushed > 0 { log("Flushed \(flushed) offline writes (\(queue.count) remaining)") }
         } catch {
             log("Queue flush error: \(error.localizedDescription)")
+            commit()
         }
     }
 
     // MARK: - Auth
+
+    // v192 — single-flight: concurrent callers share one in-flight login. Each push used to start its
+    // own, so 64 password logins hit GoTrue within 2 s when the network came back (10-02 13:00:37Z).
+    private let authGate = DispatchQueue(label: "com.lucid.authGate")
+    private var authTask: Task<Void, Error>?
 
     internal func ensureAuth() async throws {
         // If we have a valid token, reuse it
@@ -278,6 +366,17 @@ class SupabaseClient {
             return
         }
 
+        let task: Task<Void, Error> = authGate.sync {
+            if let inFlight = authTask { return inFlight }
+            let fresh = Task { try await self.login() }
+            authTask = fresh
+            return fresh
+        }
+        defer { authGate.sync { if authTask == task { authTask = nil } } }
+        try await task.value
+    }
+
+    private func login() async throws {
         guard !email.isEmpty, !password.isEmpty else {
             log("NO CREDENTIALS! Email empty: \(email.isEmpty), PW empty: \(password.isEmpty)")
             return
@@ -375,6 +474,7 @@ class SupabaseClient {
         if movementScore > 0 {
             body["movement_score"] = round(movementScore * 1000) / 1000
         }
+        let capturedAt = Date()
 
         Task {
             // v141 — hold a background-task assertion so a push started inside a brief
@@ -411,7 +511,9 @@ class SupabaseClient {
             do {
                 try await ensureAuth()
                 guard accessToken != nil else {
+                    // v192 — queue instead of dropping (09-18..09-22 AUTH FAILED 500 skipped every reading)
                     log("Skip push — no auth token")
+                    queueOfflineWrite(body, endpoint: "realtime_health", recordedAt: capturedAt)
                     return
                 }
 
@@ -433,12 +535,12 @@ class SupabaseClient {
                     // Flush any queued writes while we have connectivity
                     await flushOfflineQueue()
                 } else {
-                    queueOfflineWrite(body, endpoint: "realtime_health")
+                    queueOfflineWrite(body, endpoint: "realtime_health", recordedAt: capturedAt)
                 }
             } catch {
                 log("PUSH ERROR: \(error.localizedDescription)")
                 // Network error — queue the FULL body for later (was a 4-field stub)
-                queueOfflineWrite(body, endpoint: "realtime_health")
+                queueOfflineWrite(body, endpoint: "realtime_health", recordedAt: capturedAt)
             }
         }
     }

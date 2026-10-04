@@ -1128,7 +1128,7 @@ class BLEManager: NSObject, ObservableObject {
         // v138: anchor "when did this connection start?" at the top of the
         // sequence. The gap-check scopes the server cursor to rows older than
         // this, so handshake-window packets (stamped now() by the DB) can't
-        // poison the staleness read. Captured by value into the +2.5s closure.
+        // poison the staleness read. Captured by value into the +4.5s closure.
         let connectStart = Date()
 
         log("Step 1: Requesting battery...")
@@ -1158,7 +1158,8 @@ class BLEManager: NSObject, ObservableObject {
             p.writeValue(WhoopProtocol.listHapticsPacket(), for: c, type: .withResponse)
         }
 
-        bleQueue.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+        // After Step 4/4b: when CMD 35 + haptic list landed after CMD 22, 130 of 139 syncs froze after ~5 packets.
+        bleQueue.asyncAfter(deadline: .now() + 4.5) { [weak self] in
             guard let self, let _ = self.peripheral, let _ = self.cmdToStrap else { return }
 
             // v138: SERVER-AUTHORITATIVE + FAIL-SAFE gap detection.
@@ -1916,6 +1917,8 @@ class BLEManager: NSObject, ObservableObject {
         case 1: // META_HISTORY_START
             historyBatchCount += 1
             historyBatchStartTotal = historyBuffer.count
+            // Idle, not total: 7 syncs since 09-27 were cut off at 120 s with 9-20 batches still flowing.
+            armHistorySyncTimeout(trigger: trigger)
             log("History batch \(historyBatchCount) started")
             supabase.pushDebugLog(key: "history_sync_batch_start", value: "trigger=\(trigger) batch=\(historyBatchCount) running_total=\(historyBuffer.count)")
 
