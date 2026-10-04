@@ -11,15 +11,10 @@ import Foundation
 //     Buchheit 2014 + Plews 2013: daytime HRV is contaminated by task-state
 //     (driving, work, walking suppress HRV by sympathetic activation), so it
 //     CANNOT drive a recovery score.
-//   - CORRECTED 2026-09-03: the weights below were stale — three server
-//     rewrites out of date. The score itself has been server-computed since
-//     v102 (see computeRecovery() below); the ACTUAL live formula
-//     (supabase-migration-v153-health-audit-40-fixes.sql, compute_recovery_score)
-//     is: recovery = clamp(5, 100, 66 + (raw - 50) * 1.15), where
-//     raw = HRV_30d_percentile*0.55 + RHR_30d_percentile_inverted*0.30 +
-//     sleep_score_30d_percentile*0.15 (personal percentile rank, not a
-//     z-score sigmoid, and no strain modifier). This file no longer computes
-//     any local recovery estimate — see the removed debug block below.
+//   - Recovery is server-computed (compute_recovery_score). Since v191 it is a
+//     logit model fit on Fabi's own 539 WHOOP days: HRV z, RHR z and sleep-score
+//     deviation against his 30-day baseline (supabase-migration-v191-recovery-
+//     personal-model.sql). This file computes no local recovery estimate.
 //   - Strain: cumulative HR zone-weighted load (Whoop model, 0–21 scale).
 //     Continuous, resets at midnight.
 //   - Body Battery: Firstbeat-style. Seeded at wake from recovery (NOT 100),
