@@ -154,6 +154,8 @@ class SupabaseClient {
 
     internal var accessToken: String?
     private var tokenExpiry: Date?
+    // v110 — why the last login failed, so the account card can say "can't reach server" instead of "signed out".
+    private(set) var lastAuthError: String?
     private let session = URLSession.shared
 
     // On-screen logger — set by BLEManager
@@ -392,19 +394,36 @@ class SupabaseClient {
 
         let body: [String: String] = ["email": email, "password": password]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Single-flight login: a request that never answers would block every later sign-in, so bound it.
+        request.timeoutInterval = 20
 
-        let (data, response) = try await session.data(for: request)
+        let result: (Data, URLResponse)
+        do {
+            result = try await session.data(for: request)
+        } catch {
+            lastAuthError = error.localizedDescription
+            log("AUTH NETWORK ERROR: \(error.localizedDescription)")
+            throw error
+        }
+        let (data, response) = result
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
 
-        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let parsed = try? JSONSerialization.jsonObject(with: data) else {
+            lastAuthError = "Server answered HTTP \(statusCode)"
+            log("AUTH FAILED HTTP \(statusCode): body is not JSON")
+            throw URLError(.badServerResponse)
+        }
+        if let json = parsed as? [String: Any],
            let token = json["access_token"] as? String,
            let expiresIn = json["expires_in"] as? Int {
             self.accessToken = token
             self.tokenExpiry = Date().addingTimeInterval(TimeInterval(expiresIn - 60))
+            lastAuthError = nil
             log("Auth OK! Token valid for \(expiresIn/60) min")
         } else {
             // Auth failed — show the error
             let body = String(data: data, encoding: .utf8) ?? "no body"
+            lastAuthError = "Server answered HTTP \(statusCode)"
             log("AUTH FAILED HTTP \(statusCode): \(body.prefix(200))")
         }
     }

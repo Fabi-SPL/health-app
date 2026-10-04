@@ -574,6 +574,7 @@ private struct AuthStatusCard: View {
     //   • lucidAuthChanged notification (App posts this after every refresh)
     //   • A 5s timer (catches edge cases like network blips)
     @State private var authed: Bool = SupabaseClient.shared.isAuthenticated
+    @State private var authError: String? = SupabaseClient.shared.lastAuthError
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.md) {
@@ -583,7 +584,8 @@ private struct AuthStatusCard: View {
                 AmbientLiveDot(state: authed ? .connected : .disconnected, size: 10)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(authed ? "Signed in" : "Signed out")
+                    // The login is baked into the build, so "not authed" always means the server is unreachable.
+                    Text(authed ? "Signed in" : (SupabaseClient.hasCredentials ? "Can't reach server" : "Signed out"))
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(authed ? DS.Colors.teal : DS.Colors.pink)
 
@@ -593,6 +595,12 @@ private struct AuthStatusCard: View {
                             .font(.system(size: 10, weight: .regular, design: .monospaced))
                             .foregroundStyle(DS.Colors.textFaint)
                             .lineLimit(1)
+                    }
+                    if !authed, let authError {
+                        Text(authError)
+                            .font(.system(size: 10, weight: .regular, design: .monospaced))
+                            .foregroundStyle(DS.Colors.textFaint)
+                            .lineLimit(2)
                     }
                 }
 
@@ -606,7 +614,13 @@ private struct AuthStatusCard: View {
         }
         .padding(DS.Spacing.lg)
         .glassDefault()
-        .onAppear { refreshAuthed() }
+        .onAppear {
+            refreshAuthed()
+            Task {
+                await SupabaseClient.shared.signInIfNeeded()
+                refreshAuthed()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .lucidAuthChanged)) { _ in
             refreshAuthed()
         }
@@ -617,6 +631,7 @@ private struct AuthStatusCard: View {
 
     private func refreshAuthed() {
         authed = SupabaseClient.shared.isAuthenticated
+        authError = SupabaseClient.shared.lastAuthError
     }
 }
 
