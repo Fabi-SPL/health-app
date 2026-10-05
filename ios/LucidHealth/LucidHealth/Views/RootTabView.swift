@@ -8,6 +8,7 @@ struct RootTabView: View {
     @State private var selectedTab: AppTab = LucidScreen.current?.tab ?? .today
     @State private var showWake = LucidScreen.current == .wake
     @State private var wakeFireDate: Date?
+    @State private var showSettingsShot = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -28,6 +29,14 @@ struct RootTabView: View {
             }
             .ignoresSafeArea()
 
+            // Content scrolls under a flat status-bar strip, never under the clock.
+            VStack(spacing: 0) {
+                Color.clear.frame(height: 0)
+                    .background(DS.Colors.ground.ignoresSafeArea(edges: .top))
+                Spacer(minLength: 0)
+            }
+            .allowsHitTesting(false)
+
             // Floating pill tab bar at bottom
             PillTabBar(selectedTab: $selectedTab)
         }
@@ -36,6 +45,16 @@ struct RootTabView: View {
         .fullScreenCover(isPresented: $showWake) {
             WakeScreen(fireDate: wakeFireDate) { showWake = false }
                 .environmentObject(bleManager)
+        }
+        .sheet(isPresented: $showSettingsShot) {
+            NavigationStack { SettingsView() }
+                .environmentObject(bleManager)
+                .lucidRendered(.settings)
+        }
+        .task {
+            guard LucidScreen.current == .settings else { return }
+            try? await Task.sleep(for: .seconds(1.5))
+            showSettingsShot = true
         }
         .onReceive(bleManager.healthEngine.$smartAlarmTriggered) { fired in
             guard fired else { return }

@@ -43,13 +43,13 @@ struct HealthDataEntry: TimelineEntry {
 }
 
 private enum WidgetPalette {
-    static let violet = Color(red: 0.545, green: 0.486, blue: 0.965)
+    static let violet = Color(red: 0.039, green: 0.518, blue: 1.0)
     static let teal = Color(red: 0.310, green: 0.820, blue: 0.773)
     static let green = Color(red: 0.063, green: 0.725, blue: 0.506)
     static let amber = Color(red: 0.984, green: 0.749, blue: 0.141)
     static let red = Color(red: 0.937, green: 0.267, blue: 0.267)
-    static let bgTop = Color(red: 0.08, green: 0.07, blue: 0.15)
-    static let bgBottom = Color(red: 0.03, green: 0.03, blue: 0.06)
+    static let bgTop = Color.black
+    static let bgBottom = Color.black
 }
 
 private func recoveryColor(_ score: Double) -> Color {
@@ -161,7 +161,7 @@ private func readinessWord(_ data: SharedHealthData) -> String {
 
 private func backgroundGradient(accent: Color) -> some View {
     LinearGradient(
-        colors: [WidgetPalette.bgTop, WidgetPalette.bgBottom, accent.opacity(0.18)],
+        colors: [WidgetPalette.bgTop, WidgetPalette.bgBottom],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )

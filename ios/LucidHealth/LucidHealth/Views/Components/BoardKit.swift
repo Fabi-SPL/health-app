@@ -1100,7 +1100,7 @@ struct BoardTodayTop: View {
             }
         }
         .task { await store.refresh() }
-        .lucidRendered(.today, .todayLight, .settings)
+        .lucidRendered(.today, .todayLight)
     }
 
     private var heartRateCard: some View {
@@ -1268,10 +1268,12 @@ struct BoardHealthTop: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("HRV, 7 days").font(.system(size: 15)).foregroundStyle(DS.Colors.secondaryLabel)
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(week.last?.hrv.map(BoardFormat.one) ?? "—")
+                        let lastHRV = week.last { ($0.hrv ?? 0) > 0 }
+                        Text(lastHRV?.hrv.map(BoardFormat.one) ?? "—")
                             .font(.system(size: 20, weight: .semibold, design: .rounded))
                             .monospacedDigit()
-                        Text("ms").font(.system(size: 13)).foregroundStyle(DS.Colors.secondaryLabel)
+                        Text(lastHRV.map { "ms · " + BoardFormat.weekdayShort($0.date) } ?? "ms")
+                            .font(.system(size: 13)).foregroundStyle(DS.Colors.secondaryLabel)
                     }
                     .foregroundStyle(DS.Colors.label)
                     BoardSparkline(values: week.map { $0.hrv.flatMap { $0 > 0 ? $0 : nil } },

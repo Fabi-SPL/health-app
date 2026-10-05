@@ -108,8 +108,10 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
 
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        center.requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert]) { granted, error in
-            print("Notification permission: \(granted ? "granted" : "denied") \(error?.localizedDescription ?? "")")
+        if LucidScreen.current == nil {
+            center.requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert]) { granted, error in
+                print("Notification permission: \(granted ? "granted" : "denied") \(error?.localizedDescription ?? "")")
+            }
         }
 
         // "Stop Alarm" kill switch — the P0 fix. Every lock-screen alarm alert

@@ -3,7 +3,7 @@ import SwiftUI
 /// Gear icon button (top-trailing) — presents SettingsView as a sheet.
 /// 44pt minimum tap target per HIG.
 struct SettingsGearButton: View {
-    @State private var showSettings = LucidScreen.current == .settings
+    @State private var showSettings = false
 
     var body: some View {
         Button {

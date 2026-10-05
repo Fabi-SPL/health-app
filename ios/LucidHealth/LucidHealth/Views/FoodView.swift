@@ -284,7 +284,7 @@ struct FoodView: View {
             Text(entry.caption ?? entry.items.map(\.name).joined(separator: ", "))
         }
         .overlay(alignment: .top) {
-            if let e = error {
+            if let e = error, e != "Load failed" {
                 AlertBanner(icon: "exclamationmark.triangle", message: e, color: DS.Colors.pink)
                     .padding(.horizontal, DS.Spacing.md)
             }
