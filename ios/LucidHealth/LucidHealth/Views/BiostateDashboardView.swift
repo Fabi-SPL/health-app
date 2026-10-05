@@ -591,7 +591,7 @@ private struct ExperimentalPill: View {
             .font(.system(size: 8, weight: .heavy)).tracking(0.5)
             .foregroundStyle(DS.Colors.violet)
             .padding(.horizontal, 5).padding(.vertical, 2)
-            .background(Capsule().fill(DS.Colors.violet.opacity(0.15)))
+            .background(Capsule().fill(DS.Colors.raised2))
     }
 }
 

@@ -180,7 +180,7 @@ struct QuickTagSheet: View {
             .padding(.vertical, 8)
             .background(
                 Capsule()
-                    .fill(DS.Colors.violet.opacity(0.10))
+                    .fill(DS.Colors.raised2)
                     .overlay(Capsule().stroke(DS.Colors.violet.opacity(0.25), lineWidth: 0.5))
             )
         }

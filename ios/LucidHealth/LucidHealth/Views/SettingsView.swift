@@ -114,10 +114,9 @@ struct SettingsView: View {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(tint)
-            Text(title)
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .foregroundStyle(tint)
-                .tracking(1.2)
+            Text(SectionHeader.sentenceCase(title))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(DS.Colors.secondaryLabel)
             Spacer()
         }
         .padding(.horizontal, DS.Spacing.sm)
@@ -816,7 +815,7 @@ private struct BLEDiagnosticsCard: View {
                         .padding(.vertical, DS.Spacing.md)
                         .background(
                             Capsule()
-                                .fill(DS.Colors.violet.opacity(0.12))
+                                .fill(DS.Colors.raised2)
                                 .overlay(Capsule().stroke(DS.Colors.violet.opacity(0.3), lineWidth: 0.5))
                         )
                 }
@@ -1181,7 +1180,6 @@ private struct PersonalizationCard: View {
     @ViewBuilder
     private func consumerChip(_ emoji: String, _ label: String) -> some View {
         HStack(spacing: 3) {
-            Text(emoji).font(.system(size: 9))
             Text(label)
                 .font(.system(size: 9, weight: .semibold, design: .rounded))
                 .foregroundStyle(DS.Colors.textMuted)
@@ -1217,7 +1215,7 @@ private struct PersonalizationCard: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: DS.Radius.sm, style: .continuous)
-                .fill(DS.Colors.violet.opacity(0.06))
+                .fill(DS.Colors.raised2)
         )
     }
 }

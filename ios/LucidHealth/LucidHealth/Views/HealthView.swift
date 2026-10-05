@@ -276,7 +276,7 @@ struct HealthView: View {
                     .foregroundStyle(DS.Colors.violet)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
-                    .background(Capsule().fill(DS.Colors.violet.opacity(0.10)))
+                    .background(Capsule().fill(DS.Colors.raised2))
                 }
                 .buttonStyle(.plain)
             }

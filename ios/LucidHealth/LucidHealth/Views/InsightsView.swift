@@ -206,7 +206,7 @@ private struct LabsBiostateRow: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(DS.Colors.violet)
                     .frame(width: 32, height: 32)
-                    .background(Circle().fill(DS.Colors.violet.opacity(0.12)))
+                    .background(Circle().fill(DS.Colors.raised2))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Labs · Biostate")
                         .font(.system(size: 14, weight: .bold, design: .rounded))
@@ -401,11 +401,11 @@ private struct FeaturedDiscoveryCard: View {
                 .foregroundStyle(DS.Colors.violet)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
-                .background(Capsule().fill(DS.Colors.violet.opacity(0.12)))
+                .background(Capsule().fill(DS.Colors.raised2))
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(DS.Colors.violet.opacity(0.10)))
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(DS.Colors.raised2))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(DS.Colors.violet.opacity(0.28), lineWidth: 1))
     }
 

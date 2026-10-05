@@ -469,7 +469,7 @@ struct TodayView: View {
             HStack(spacing: DS.Spacing.md) {
                 ZStack {
                     Circle()
-                        .fill(DS.Colors.violet.opacity(0.15))
+                        .fill(DS.Colors.raised2)
                         .frame(width: 36, height: 36)
                     Image(systemName: "play.fill")
                         .font(.system(size: 13, weight: .bold))

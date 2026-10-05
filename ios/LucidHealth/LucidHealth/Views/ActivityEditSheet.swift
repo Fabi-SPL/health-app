@@ -425,7 +425,7 @@ struct PhysiologyBacktrackView: View {
                     let bandStart = max(0, min(startX, endX))
                     let bandWidth = max(0, min(endX - startX, w))
                     Rectangle()
-                        .fill(DS.Colors.violet.opacity(0.14))
+                        .fill(DS.Colors.raised2)
                         .frame(width: bandWidth, height: h)
                         .offset(x: bandStart, y: 0)
                         .allowsHitTesting(false)

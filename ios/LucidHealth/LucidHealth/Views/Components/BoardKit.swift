@@ -451,40 +451,48 @@ struct BoardBanner: View {
     var action: (() -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(DS.Colors.warning)
-                    .frame(width: 24, height: 24)
-                VStack(alignment: .leading, spacing: 2) {
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(DS.Colors.label)
+                    .frame(width: 40, height: 40)
+                    .overlay(Circle().stroke(DS.Colors.separator, lineWidth: 1))
+                VStack(alignment: .leading, spacing: 0) {
                     Text(title)
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(DS.Colors.label)
                     Text(subtitle)
-                        .font(.system(size: 13))
+                        .font(.system(size: 15))
                         .foregroundStyle(DS.Colors.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-                if let actionTitle, let action {
-                    Button(actionTitle, action: action)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(DS.Colors.primaryText)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(Capsule().fill(DS.Colors.primaryFill))
-                        .buttonStyle(.plain)
-                }
             }
-            if let detail {
-                Text(detail)
-                    .font(.system(size: 13))
-                    .foregroundStyle(DS.Colors.secondaryLabel)
-                    .fixedSize(horizontal: false, vertical: true)
+            if actionTitle != nil || detail != nil {
+                HStack(alignment: .center, spacing: 12) {
+                    if let actionTitle, let action {
+                        Button(actionTitle, action: action)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(DS.Colors.primaryText)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
+                            .background(Capsule().fill(DS.Colors.primaryFill))
+                            .buttonStyle(.plain)
+                            .fixedSize()
+                    }
+                    if let detail {
+                        Text(detail)
+                            .font(.system(size: 13))
+                            .foregroundStyle(DS.Colors.secondaryLabel)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
         }
         .padding(16)
-        .background(RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous).fill(DS.Colors.raised))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(DS.Colors.raised))
     }
 }
 
@@ -960,6 +968,14 @@ struct BoardTodayTop: View {
         bleManager.connectionState == .disconnected || bleManager.connectionState == .scanning
     }
 
+    private var sleepSubtitle: String {
+        guard night.hours != nil else { return store.loadedOnce ? "Still syncing from the strap" : "Loading" }
+        var parts: [String] = []
+        if let s = night.start, let e = night.end { parts.append("\(BoardFormat.clock(s)) to \(BoardFormat.clock(e))") }
+        if night.isFallback { parts.append("last full night, \(night.dateLabel)") }
+        return parts.joined(separator: " · ")
+    }
+
     private var todaysMeals: [FoodEntry] {
         store.meals.filter { Calendar.current.isDateInToday($0.capturedAt) }.sorted { $0.capturedAt > $1.capturedAt }
     }
@@ -1025,32 +1041,22 @@ struct BoardTodayTop: View {
             Button { selectTab(.health) } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "moon").foregroundStyle(DS.Colors.accent).frame(width: 24)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Sleep").font(.system(size: 17)).foregroundStyle(DS.Colors.label)
-                        if night.isFallback {
-                            Text("Last full night, \(night.dateLabel)")
-                                .font(.system(size: 11))
-                                .foregroundStyle(DS.Colors.secondaryLabel)
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let h = night.hours {
+                            Text("Sleep \(Text(BoardFormat.duration(hours: h)).fontWeight(.semibold))")
+                                .font(.system(size: 17))
+                                .monospacedDigit()
+                                .foregroundStyle(DS.Colors.label)
+                        } else {
+                            Text("Sleep").font(.system(size: 17)).foregroundStyle(DS.Colors.label)
                         }
+                        Text(sleepSubtitle)
+                            .font(.system(size: 13))
+                            .monospacedDigit()
+                            .foregroundStyle(DS.Colors.secondaryLabel)
+                            .lineLimit(1)
                     }
                     Spacer()
-                    if let h = night.hours {
-                        Text(BoardFormat.duration(hours: h))
-                            .font(.system(size: 15, weight: .semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(DS.Colors.label)
-                        if let s = night.start, let e = night.end {
-                            Text("· \(BoardFormat.clock(s)) to \(BoardFormat.clock(e))")
-                                .font(.system(size: 15))
-                                .monospacedDigit()
-                                .foregroundStyle(DS.Colors.secondaryLabel)
-                                .lineLimit(1)
-                        }
-                    } else {
-                        Text(store.loadedOnce ? "Still syncing" : "Loading")
-                            .font(.system(size: 15))
-                            .foregroundStyle(DS.Colors.secondaryLabel)
-                    }
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(DS.Colors.dim)

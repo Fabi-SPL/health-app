@@ -30,8 +30,6 @@ struct StatusChip: View {
             }
             Text(text)
                 .font(.system(size: 11, weight: .bold, design: .rounded))
-                .tracking(0.8)
-                .textCase(.uppercase)
         }
         .foregroundStyle(color)
         .padding(.horizontal, 10)

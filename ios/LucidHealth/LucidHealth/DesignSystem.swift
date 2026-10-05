@@ -95,12 +95,12 @@ enum DS {
         static let warning = recoveryMid
         static let blue = accent
         static let pink = dyn(0xA1A1A6, 0x6E6E73)
-        static let amber = warning
+        static let amber = dyn(0xAEAEB2, 0x636366)
 
         // Borders
         static let border = dyn(0x2C2C2E, 0xE5E5EA)
         static let borderStrong = separator
-        static let borderViolet = dyn(0x0A84FF, 0x0066CC, 0.35)
+        static let borderViolet = separator
         static let borderTeal = border
 
         // Recovery zones

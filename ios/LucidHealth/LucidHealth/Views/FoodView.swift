@@ -538,10 +538,9 @@ private struct PotSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             HStack {
-                Text("IN THE POT")
-                    .font(DS.Font.label)
-                    .foregroundStyle(DS.Colors.textMuted)
-                    .tracking(0.8)
+                Text("In the pot")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(DS.Colors.label)
                 Spacer()
                 Button {
                     DS.Haptic.tap()
@@ -554,7 +553,7 @@ private struct PotSection: View {
                     .foregroundStyle(DS.Colors.violet)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(Capsule().fill(DS.Colors.violet.opacity(0.12)))
+                    .background(Capsule().fill(DS.Colors.raised2))
                 }
                 .buttonStyle(.plain)
             }
@@ -974,10 +973,9 @@ private struct FavoritesBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-            Text("QUICK LOG")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(DS.Colors.textFaint)
-                .tracking(1)
+            Text("Quick log")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(DS.Colors.label)
                 .padding(.horizontal, DS.Spacing.md)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: DS.Spacing.sm) {
@@ -1024,7 +1022,7 @@ private struct FavoritePill: View {
             .padding(.vertical, DS.Spacing.sm)
             .background(
                 Capsule()
-                    .fill(DS.Colors.violet.opacity(0.10))
+                    .fill(DS.Colors.raised2)
                     .overlay(
                         Capsule().stroke(DS.Colors.borderViolet, lineWidth: 0.5)
                     )
@@ -1065,10 +1063,9 @@ private struct CutStatusCard: View {
             bar(pct: cut.intakePct, tint: cut.isOver ? DS.Colors.warning : DS.Colors.violet)
 
             HStack(spacing: 6) {
-                Text("PROTEIN")
-                    .font(DS.Font.label)
-                    .foregroundStyle(DS.Colors.textMuted)
-                    .tracking(0.8)
+                Text("Protein")
+                    .font(.system(size: 15))
+                    .foregroundStyle(DS.Colors.secondaryLabel)
                 Text("\(Int(cut.proteinG)) / \(cut.proteinTarget) g")
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .foregroundStyle(cut.proteinPct >= 1 ? DS.Colors.success : DS.Colors.textSecondary)
@@ -1103,10 +1100,9 @@ private struct SupplementShelfCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             HStack {
-                Text("SUPPLEMENTS")
-                    .font(DS.Font.label)
-                    .foregroundStyle(DS.Colors.textMuted)
-                    .tracking(0.8)
+                Text("Supplements")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(DS.Colors.label)
                 Spacer()
                 Text("\(takenCount)/\(items.count) today")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
@@ -1169,7 +1165,7 @@ private struct SupplementRow: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(DS.Colors.violet)
                     .frame(width: 30, height: 30)
-                    .background(Circle().fill(DS.Colors.violet.opacity(0.12)))
+                    .background(Circle().fill(DS.Colors.raised2))
             }
             .buttonStyle(.plain)
         }
@@ -1202,11 +1198,9 @@ private struct FoodIntakeHero: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Intake & macros")
-                    .font(.system(size: 10, weight: .bold))
-                    .tracking(1.4)
-                    .textCase(.uppercase)
-                    .foregroundStyle(DS.Colors.textMuted)
+                Text("Intake and macros")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(DS.Colors.label)
                 Spacer()
                 Text(headerStat)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
@@ -1346,8 +1340,8 @@ private struct FoodQualityCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Food quality")
-                    .font(.system(size: 10, weight: .bold)).tracking(1.4).textCase(.uppercase)
-                    .foregroundStyle(DS.Colors.textMuted)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(DS.Colors.label)
                 Spacer()
                 if hasAlcohol {
                     Text("Alcohol")
@@ -1455,8 +1449,8 @@ private struct CaffeineCurveCard: View {
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Caffeine")
-                    .font(.system(size: 10, weight: .bold)).tracking(1.4).textCase(.uppercase)
-                    .foregroundStyle(DS.Colors.textMuted)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(DS.Colors.label)
                 Spacer()
                 Text("\(Int(activeNow.rounded())) mg active")
                     .font(.system(size: 14, weight: .bold, design: .rounded)).monospacedDigit()
@@ -1929,7 +1923,7 @@ private struct FoodDetailView: View {
                 .foregroundStyle(DS.Colors.violet)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, DS.Spacing.md)
-                .background(Capsule().fill(DS.Colors.violet.opacity(0.12)).overlay(Capsule().stroke(DS.Colors.violet.opacity(0.3), lineWidth: 0.5)))
+                .background(Capsule().fill(DS.Colors.raised2).overlay(Capsule().stroke(DS.Colors.separator, lineWidth: 0.5)))
         }
         .buttonStyle(.plain)
     }
@@ -2155,7 +2149,7 @@ private struct MealBuilderSheet: View {
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(DS.Colors.violet)
                 .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(Capsule().fill(DS.Colors.violet.opacity(0.12))
+                .background(Capsule().fill(DS.Colors.raised2)
                     .overlay(Capsule().stroke(DS.Colors.violet.opacity(0.25), lineWidth: 0.5)))
         }
         .buttonStyle(.plain)
@@ -2579,7 +2573,7 @@ private struct QuickLogEditorSheet: View {
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(DS.Colors.violet)
                 .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(Capsule().fill(DS.Colors.violet.opacity(0.12))
+                .background(Capsule().fill(DS.Colors.raised2)
                     .overlay(Capsule().stroke(DS.Colors.violet.opacity(0.25), lineWidth: 0.5)))
         }
         .buttonStyle(.plain)

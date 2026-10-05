@@ -20,11 +20,7 @@ struct RecoveryBreakdownBar: View {
         return [
             Segment(label: "HRV", value: hrv / total, color: DS.Colors.teal),
             Segment(label: "RHR", value: rhr / total, color: DS.Colors.violet),
-            Segment(label: "Sleep", value: sleep / total, color: Color(UIColor { tc in
-                tc.userInterfaceStyle == .dark
-                    ? UIColor(red: 0.62, green: 0.56, blue: 1.0, alpha: 1)
-                    : UIColor(red: 0.50, green: 0.40, blue: 0.85, alpha: 1)
-            })),
+            Segment(label: "Sleep", value: sleep / total, color: DS.Colors.chartNeutral),
             Segment(label: "Strain", value: rr / total, color: DS.Colors.amber),
         ].filter { $0.value > 0 }
     }

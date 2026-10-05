@@ -92,7 +92,7 @@ struct BarcodeResultView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg))
                         default:
                             RoundedRectangle(cornerRadius: DS.Radius.lg)
-                                .fill(DS.Colors.violet.opacity(0.08))
+                                .fill(DS.Colors.raised2)
                                 .frame(height: 200)
                         }
                     }
@@ -187,7 +187,7 @@ struct BarcodeResultView: View {
                     .foregroundStyle(DS.Colors.violet)
                     .background(
                         RoundedRectangle(cornerRadius: DS.Radius.md)
-                            .fill(DS.Colors.violet.opacity(0.10))
+                            .fill(DS.Colors.raised2)
                             .overlay(RoundedRectangle(cornerRadius: DS.Radius.md)
                                 .stroke(DS.Colors.violet.opacity(0.28), lineWidth: 0.5))
                     )

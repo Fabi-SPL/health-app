@@ -167,7 +167,7 @@ struct ManualFoodEntrySheet: View {
                 .padding(.vertical, 6)
                 .background(
                     Capsule()
-                        .fill(DS.Colors.violet.opacity(0.12))
+                        .fill(DS.Colors.raised2)
                         .overlay(Capsule().stroke(DS.Colors.violet.opacity(0.25), lineWidth: 0.5))
                 )
         }

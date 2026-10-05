@@ -32,7 +32,7 @@ struct TimeOfDayHero: View {
         var iconColor: Color {
             switch self {
             case .morning:   return DS.Colors.amber
-            case .midday:    return Color(UIColor(red: 1.0, green: 0.83, blue: 0.2, alpha: 1))
+            case .midday:    return DS.Colors.secondaryLabel
             case .evening:   return DS.Colors.pink.opacity(0.8)
             case .windDown:  return DS.Colors.violet.opacity(0.8)
             }
