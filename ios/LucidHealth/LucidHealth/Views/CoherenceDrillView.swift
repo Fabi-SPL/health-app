@@ -112,20 +112,10 @@ struct CoherenceDrillView: View {
             // Main sphere
             ZStack {
                 Circle()
-                    .fill(LinearGradient(
-                        colors: [DS.Colors.violet, DS.Colors.teal],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ))
+                    .stroke(DS.Colors.separator, lineWidth: 1)
                     .frame(width: 200, height: 200)
-                    .blur(radius: 8)
-                    .opacity(0.6)
                 Circle()
-                    .fill(LinearGradient(
-                        colors: [DS.Colors.violet.opacity(0.8), DS.Colors.teal.opacity(0.6)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ))
+                    .fill(DS.Colors.accent.opacity(0.85))
                     .frame(width: 180, height: 180)
                     .overlay(
                         VStack(spacing: 4) {
@@ -213,7 +203,7 @@ struct CoherenceDrillView: View {
                     .font(.system(size: 16, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity).padding(.vertical, 14)
-                    .background(LinearGradient(colors: [DS.Colors.violet, DS.Colors.teal], startPoint: .leading, endPoint: .trailing))
+                    .background(DS.Colors.accent)
                     .clipShape(Capsule())
             }
             .padding(.horizontal, DS.Spacing.lg)
@@ -292,7 +282,7 @@ struct CoherenceDrillView: View {
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity).padding(.vertical, 12)
-                        .background(LinearGradient(colors: [DS.Colors.violet, DS.Colors.teal], startPoint: .leading, endPoint: .trailing))
+                        .background(DS.Colors.accent)
                         .clipShape(Capsule())
                 }
             }

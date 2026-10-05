@@ -1,13 +1,13 @@
 import SwiftUI
 
 // MARK: - RootTabView
-// Principle #8: floating pill tab bar, content-first design.
-// Mesh gradient lives here once — never reflows on tab change.
-// Settings is NOT a tab — gear icon → sheet on Today + Health.
+// Flat bottom tab bar; the wake screen after the smart alarm covers it full screen.
 
 struct RootTabView: View {
     @EnvironmentObject var bleManager: BLEManager
-    @State private var selectedTab: AppTab = .today
+    @State private var selectedTab: AppTab = LucidScreen.current?.tab ?? .today
+    @State private var showWake = LucidScreen.current == .wake
+    @State private var wakeFireDate: Date?
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -32,6 +32,22 @@ struct RootTabView: View {
             PillTabBar(selectedTab: $selectedTab)
         }
         .ignoresSafeArea(.keyboard)
+        .environment(\.selectTab) { selectedTab = $0 }
+        .fullScreenCover(isPresented: $showWake) {
+            WakeScreen(fireDate: wakeFireDate) { showWake = false }
+                .environmentObject(bleManager)
+        }
+        .onReceive(bleManager.healthEngine.$smartAlarmTriggered) { fired in
+            guard fired else { return }
+            wakeFireDate = bleManager.healthEngine.alarmLastFireDate ?? Date()
+            showWake = true
+        }
+        .onAppear {
+            if let f = bleManager.healthEngine.alarmLastFireDate, Date().timeIntervalSince(f) < 30 * 60 {
+                wakeFireDate = f
+                showWake = true
+            }
+        }
     }
 
     @ViewBuilder

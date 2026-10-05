@@ -2497,6 +2497,60 @@ class SupabaseClient {
         }
     }
 
+    /// Read-only: the live sleep stage of each reading in one window, oldest first.
+    /// About one row a second, so it is fetched in 30-minute slices of up to 1000 rows.
+    func fetchSleepStages(start: Date, end: Date) async -> [(time: Date, stage: String)] {
+        do { try await ensureAuth() } catch {
+            log("fetchSleepStages auth error: \(error.localizedDescription)")
+            return []
+        }
+        guard let token = accessToken, end > start else { return [] }
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        var slices: [(String, String)] = []
+        var t = start
+        while t < end {
+            let next = min(end, t.addingTimeInterval(1800))
+            slices.append((fmt.string(from: t), fmt.string(from: next)))
+            t = next
+        }
+        let base = baseURL, key = anonKey, uid = userId, sess = session
+        let rows = await withTaskGroup(of: [(time: Date, stage: String)].self) { group in
+            for (a, b) in slices {
+                group.addTask {
+                    let iso = ISO8601DateFormatter()
+                    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    let isoPlain = ISO8601DateFormatter()
+                    isoPlain.formatOptions = [.withInternetDateTime]
+                    var out: [(time: Date, stage: String)] = []
+                    var offset = 0
+                    while offset < 4000 {
+                        let q = "user_id=eq.\(uid)&recorded_at=gte.\(a)&recorded_at=lt.\(b)&sleep_stage=not.is.null&select=recorded_at,sleep_stage&order=recorded_at.asc&limit=1000&offset=\(offset)"
+                        guard let url = URL(string: "\(base)/rest/v1/realtime_health?\(q)") else { break }
+                        var req = URLRequest(url: url)
+                        req.setValue(key, forHTTPHeaderField: "apikey")
+                        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                        guard let (data, resp) = try? await sess.data(for: req),
+                              (resp as? HTTPURLResponse)?.statusCode == 200,
+                              let page = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { break }
+                        for row in page {
+                            guard let ts = row["recorded_at"] as? String, let st = row["sleep_stage"] as? String,
+                                  let d = iso.date(from: ts) ?? isoPlain.date(from: ts) else { continue }
+                            out.append((time: d, stage: st.lowercased()))
+                        }
+                        if page.count < 1000 { break }
+                        offset += 1000
+                    }
+                    return out
+                }
+            }
+            var all: [(time: Date, stage: String)] = []
+            for await part in group { all.append(contentsOf: part) }
+            return all
+        }
+        return rows.sorted { $0.time < $1.time }
+    }
+
     /// Fetch raw physiology readings from `realtime_health` for a given time window.
     /// Powers the Timeline backtrack scrubber — user can find HR/HRV spikes to snap
     /// activity boundaries to them.

@@ -15,67 +15,38 @@ struct HealthView: View {
     private var engine: HealthEngine { bleManager.healthEngine }
 
     var body: some View {
-        ZStack {
+        ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: DS.Spacing.lg) {
-                    Color.clear.frame(height: DS.Spacing.sm)
+                    BoardHealthTop(onAdjustSleep: { showSleepAdjust = true })
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
 
-                    // Story order: battery spine → the systems that feed it.
-                    // Page opens on the hero — zero controls above it.
+                    BoardSectionTitle(title: "More from the strap")
+                        .padding(.horizontal, 20)
+                        .padding(.top, DS.Spacing.md)
+
                     bodyBatteryHeroSection
-                        .staggerIn(appeared: appeared, index: 0)
-
-                    // FORMAT: ROW — live now (biometrics larger)
                     liveNowSection
-                        .staggerIn(appeared: appeared, index: 1)
-
-                    // FORMAT: BAR — recovery breakdown + trend + forecast (one cluster)
-                    recoveryBreakdownSection
-                        .staggerIn(appeared: appeared, index: 2)
-
                     TomorrowForetoldCard(actualRecoveryToday: engine.recoveryScore)
                         .padding(.horizontal, DS.Spacing.md)
-                        .staggerIn(appeared: appeared, index: 2)
-
-                    // FORMAT: CHART — HRV trend (research metrics behind disclosure)
-                    hrvTrendSection
-                        .staggerIn(appeared: appeared, index: 3)
-
-                    // FORMAT: STACKED BAR + TILES — sleep (score + details + adjust)
-                    sleepSection
-                        .staggerIn(appeared: appeared, index: 4)
-
-                    // FORMAT: ZONED BAR + NUMBER — strain & activity
                     strainSection
-                        .staggerIn(appeared: appeared, index: 5)
-
-                    // FORMAT: GAUGE (conditional) — illness signals
                     if engine.illnessRisk > 0 || engine.lastAlcoholImpact > 10 {
                         illnessSection
-                            .staggerIn(appeared: appeared, index: 6)
                     }
-
-                    // One-line device strip — telemetry lives in Settings → Diagnostics
                     deviceStrip
-                        .staggerIn(appeared: appeared, index: 7)
 
                     Color.clear.frame(height: 100)
                 }
             }
-        }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                TwoToneHeadline(
-                    primary: "Health",
-                    secondary: " · Biometrics",
-                    font: .system(size: 17, weight: .heavy, design: .rounded)
-                )
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                SettingsGearButton()
+            .task {
+                guard LucidScreen.current == .healthDetail else { return }
+                try? await Task.sleep(for: .seconds(8))
+                proxy.scrollTo("health-detail", anchor: .top)
             }
         }
+        .background(DS.Colors.ground)
+        .toolbar(.hidden, for: .navigationBar)
         .onAppear { withAnimation { appeared = true } }
         .task { recoveryTrend = await bleManager.supabase.fetchRecoveryTrend() }
         .sheet(isPresented: $showSleepAdjust) {
@@ -860,7 +831,7 @@ private struct ForecastRangeBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(DS.Colors.track).frame(height: 6)
                 Capsule()
-                    .fill(LinearGradient(colors: [DS.Colors.violet.opacity(0.55), DS.Colors.teal.opacity(0.55)], startPoint: .leading, endPoint: .trailing))
+                    .fill(DS.Colors.accent.opacity(0.5))
                     .frame(width: max(4, w * (hi - lo)), height: 6)
                     .offset(x: w * lo)
                 Circle().fill(DS.Colors.violet).frame(width: 11, height: 11)

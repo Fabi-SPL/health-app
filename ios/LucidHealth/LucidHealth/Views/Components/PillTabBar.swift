@@ -9,10 +9,10 @@ enum AppTab: Int, CaseIterable {
 
     var icon: String {
         switch self {
-        case .today:    return "sun.max.fill"
-        case .health:   return "heart.fill"
+        case .today:    return "clock"
+        case .health:   return "heart"
         case .food:     return "fork.knife"
-        case .insights: return "chart.bar.fill"
+        case .insights: return "chart.xyaxis.line"
         }
     }
 
@@ -28,13 +28,12 @@ enum AppTab: Int, CaseIterable {
 
 struct PillTabBar: View {
     @Binding var selectedTab: AppTab
-    @Namespace private var indicator
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.rawValue) { tab in
                 Button {
-                    withAnimation(DS.Anim.standard) { selectedTab = tab }
+                    selectedTab = tab
                 } label: {
                     tabItem(tab)
                 }
@@ -42,44 +41,29 @@ struct PillTabBar: View {
                 .accessibilityLabel(tab.label)
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 60)
-        // ONE selection haptic per switch — was inside the ForEach (fired 4× per tap).
+        .frame(height: 49, alignment: .top)
         .sensoryFeedback(.selection, trigger: selectedTab)
-        .background(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(DS.Colors.cardFillElevated)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(DS.Colors.border, lineWidth: 0.5)
-        )
-        .padding(.horizontal, 32)
-        .padding(.bottom, 8)
+        .background(alignment: .top) {
+            DS.Colors.ground
+                .overlay(alignment: .top) {
+                    Rectangle().fill(DS.Colors.separator).frame(height: 0.5)
+                }
+                .ignoresSafeArea(edges: .bottom)
+        }
     }
 
-    @ViewBuilder
     private func tabItem(_ tab: AppTab) -> some View {
         let isActive = selectedTab == tab
-
-        ZStack {
-            if isActive {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(DS.Colors.violet.opacity(0.14))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(DS.Colors.borderViolet, lineWidth: 0.5)
-                    )
-                    .frame(width: 44, height: 44)
-                    .matchedGeometryEffect(id: "tabIndicator", in: indicator)
-            }
-
+        return VStack(spacing: 3) {
             Image(systemName: tab.icon)
-                .font(.system(size: 17, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(isActive ? DS.Colors.violet : DS.Colors.textMuted)
+                .font(.system(size: 20, weight: .regular))
+                .frame(height: 24)
+            Text(tab.label)
+                .font(.system(size: 10, weight: .medium))
         }
-        .frame(maxWidth: .infinity, minHeight: 44)
+        .padding(.top, 7)
+        .foregroundStyle(isActive ? DS.Colors.accent : DS.Colors.secondaryLabel)
+        .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
     }
 }

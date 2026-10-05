@@ -9,6 +9,7 @@ name: TestFlight Health
 
 on:
   push:
+    branches-ignore: ['redesign/**']
     paths:
       - 'ios/LucidHealth/**'
       - '.github/workflows/testflight.yml'

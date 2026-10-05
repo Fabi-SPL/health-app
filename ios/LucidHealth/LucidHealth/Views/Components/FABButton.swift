@@ -15,7 +15,7 @@ struct FABButton: View {
                 Circle()
                     .fill(DS.Colors.violet)
                     .frame(width: 56, height: 56)
-                    .shadow(color: DS.Colors.violet.opacity(0.45), radius: 12, x: 0, y: 4)
+
 
                 Image(systemName: isOpen ? "xmark" : "plus")
                     .font(.system(size: 22, weight: .semibold))

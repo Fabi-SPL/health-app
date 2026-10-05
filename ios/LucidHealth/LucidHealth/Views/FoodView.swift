@@ -86,18 +86,23 @@ struct FoodView: View {
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            // List instead of ScrollView/LazyVStack — gives us native .swipeActions
-            // for entries that won't fight the scroll gesture (the previous custom
-            // SwipeActionsCard was eating vertical scrolls).
             List {
-                // Top-of-list sections — explicit per-row .padding(.top:) because
-                // listRowInsets(EdgeInsets()) + defaultMinListRowHeight 0 kill
-                // SwiftUI's native row spacing. Without this they squish flush.
-                // Order: the logging tab leads with logging (quick log first),
-                // then the hero (meal count + fast docked in its header), then
-                // one merged Food-quality card. Bento + filter row are gone —
-                // 3 of 4 bento tiles repeated adjacent cards, and the filter's
-                // manual/text sources were unreachable.
+                BoardFoodTop(
+                    offline: error != nil,
+                    onRetry: { Task { await loadEntries() } },
+                    onDescribe: { showManual = true },
+                    onPhoto: { showCamera = true },
+                    onBarcode: { showBarcode = true },
+                    onBuild: { showBuilder = true }
+                )
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+
+                todaySection
+
                 Section {
                     if let cut {
                         CutStatusCard(cut: cut)
@@ -185,33 +190,10 @@ struct FoodView: View {
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 0)
 
-            // FAB
-            VStack(spacing: DS.Spacing.sm) {
-                if showFABMenu {
-                    FABMenu(
-                        isOpen: $showFABMenu,
-                        onCamera: { showCamera = true },
-                        onBarcode: { showBarcode = true },
-                        onManual: { showManual = true },
-                        onBuild: { showBuilder = true }
-                    )
-                    .padding(.trailing, DS.Spacing.lg)
-                }
-
-                FABButton(isOpen: $showFABMenu)
-                    .padding(.trailing, DS.Spacing.lg)
-                    .padding(.bottom, 100)
-            }
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                TwoToneHeadline(primary: "Food", secondary: " · Meals", font: .system(size: 17, weight: .bold, design: .rounded))
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                SettingsGearButton()
-            }
-        }
+        .background(DS.Colors.ground)
+        .toolbar(.hidden, for: .navigationBar)
+        .refreshable { await loadEntries() }
         .fullScreenCover(isPresented: $showCamera) {
             CameraView { entry in
                 entries.insert(entry, at: 0)
@@ -327,7 +309,7 @@ struct FoodView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
         } else {
-            let grouped = Dictionary(grouping: entries) { entry in
+            let grouped = Dictionary(grouping: entries.filter { !isToday($0) }) { entry in
                 Calendar.current.startOfDay(for: entry.capturedAt)
             }
             let sortedDays = grouped.keys.sorted(by: >)
@@ -383,6 +365,51 @@ struct FoodView: View {
                         .listRowBackground(Color.clear)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var todaySection: some View {
+        let today = todayEntries.sorted { $0.capturedAt < $1.capturedAt }
+        BoardSectionTitle(title: "Today", trailing: today.isEmpty ? nil : "\(today.count) \(today.count == 1 ? "meal" : "meals") · \(todayKcal) kcal")
+            .padding(.horizontal, 20)
+            .padding(.top, 28)
+            .padding(.bottom, 4)
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        if today.isEmpty {
+            Text(isLoading ? "Loading…" : (error != nil ? "Today's meals load when the server answers." : "Nothing logged yet today."))
+                .font(.system(size: 15))
+                .foregroundStyle(DS.Colors.secondaryLabel)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        }
+        ForEach(today) { entry in
+            BoardMealRow(entry: entry)
+                .padding(.horizontal, 20)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(DS.Colors.separator)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 20 }
+                .contentShape(Rectangle())
+                .onTapGesture { detailEntry = entry }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        pendingDelete = entry
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    Button {
+                        editing = entry
+                    } label: {
+                        Label("Edit", systemImage: "square.and.pencil")
+                    }
+                    .tint(DS.Colors.accent)
+                }
         }
     }
 
@@ -1339,7 +1366,7 @@ private struct FoodQualityCard: View {
                 ForEach(0..<15, id: \.self) { i in
                     RoundedRectangle(cornerRadius: 2, style: .continuous)
                         .fill(i < filled
-                              ? AnyShapeStyle(LinearGradient(colors: [DS.Colors.violet, DS.Colors.teal], startPoint: .top, endPoint: .bottom))
+                              ? AnyShapeStyle(DS.Colors.accent)
                               : AnyShapeStyle(DS.Colors.track))
                         .frame(maxWidth: .infinity)
                         .frame(height: 26)
@@ -1450,7 +1477,7 @@ private struct CaffeineCurveCard: View {
                         p.addLine(to: CGPoint(x: w, y: h))
                         p.closeSubpath()
                     }
-                    .fill(LinearGradient(colors: [DS.Colors.amber.opacity(0.34), DS.Colors.amber.opacity(0.02)], startPoint: .top, endPoint: .bottom))
+                    .fill(DS.Colors.amber.opacity(0.14))
                     Path { p in
                         for (i, s) in samples.enumerated() { i == 0 ? p.move(to: s) : p.addLine(to: s) }
                     }

@@ -40,7 +40,7 @@ struct LogViewerView: View {
             VStack(spacing: 0) {
                 tagFilterRow
                     .padding(.vertical, DS.Spacing.sm)
-                    .background(.ultraThinMaterial)
+                    .background(DS.Colors.raised)
 
                 ScrollViewReader { proxy in
                     ScrollView {

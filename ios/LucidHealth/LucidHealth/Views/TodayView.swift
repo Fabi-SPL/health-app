@@ -64,28 +64,9 @@ struct TodayView: View {
     // MARK: - Body
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            // Late-night no longer hijacks the screen with a "sleep is the work"
-            // takeover — the body (hero, live stats, alarm) stays visible around
-            // the clock. Mode shifts tone via the conditional coach clusters.
-            regularContent
-            fabSection
-        }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                // Greeting moved to the prominent in-scroll header; toolbar is just
-                // the wordmark now (no duplicate greeting).
-                TwoToneHeadline(
-                    primary: "Lucid",
-                    secondary: "Health",
-                    font: .system(size: 17, weight: .heavy, design: .rounded)
-                )
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                SettingsGearButton()
-            }
-        }
+        regularContent
+        .background(DS.Colors.ground)
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $bleManager.showDoubleTapSheet) {
             QuickTagSheet(ble: bleManager)
         }
@@ -200,49 +181,13 @@ struct TodayView: View {
 
     @ViewBuilder
     private var regularContent: some View {
-        // Spacing scale per section role — fixes the "too big / too small" rhythm:
-        //   • Mode/overlay banners — sm (8pt) — quick context, tight cluster
-        //   • Hero ring zone — xl (32pt) — main focal point, needs breathing
-        //   • Live stats — sm (8pt) — extends hero, tight cluster
-        //   • Activity composer — xl (32pt) — separate concern
-        //   • Last meal + bento — md (16pt) — food cluster, related
-        //   • Conditional banners — md/lg — dynamic, varied weight
-        //   • Baseline delta — xl (32pt) — analytical surface, separate
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
-                Color.clear.frame(height: DS.Spacing.xs)
+                BoardTodayTop()
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
 
-                // Prominent adaptive greeting — the day's anchor. Time-aware phrase
-                // + today's full date (so it's also a live "you're on a fresh build"
-                // tell). Replaces the tiny nav-bar greeting as the warm entry point.
-                greetingHeader
-                    .opacity(appeared ? 1 : 0)
-                    .offset(y: appeared ? 0 : 14)
-                    .animation(DS.Anim.cardAppear, value: appeared)
-
-                // Hero ring + live stats — THE focal point, first substantive block
-                // (matches the approved mockup: ring immediately under the greeting).
-                // ModeBanner folded into the morning cluster below — it renders
-                // nothing 4 of 6 modes, so the hero rises above the fold.
-                VStack(spacing: 0) {
-                    heroSection
-                        .padding(.top, DS.Spacing.lg)
-                        .opacity(appeared ? 1 : 0)
-                        .offset(y: appeared ? 0 : 28)
-                        .animation(DS.Anim.stagger(index: 0), value: appeared)
-
-                    liveStatsSection
-                        .padding(.top, DS.Spacing.sm)
-                        .opacity(appeared ? 1 : 0)
-                        .offset(y: appeared ? 0 : 20)
-                        .animation(DS.Anim.stagger(index: 1), value: appeared)
-                }
-                .scrollSectionTransition()
-
-                // ONE coach surface, mode-conditional. Tonight cluster = plan
-                // card (drinking flag) + THE alarm (v154 smart wake). The legacy
-                // v117 SmartAlarmCard is gone — two competing alarm systems the
-                // same night was the "doesn't make sense" epicenter.
                 if modeStore.current == .windDown || modeStore.current == .lateNight {
                     if modeStore.current == .windDown {
                         // v111 live readiness coach — how far the body is from sleep-ready.
@@ -305,18 +250,6 @@ struct TodayView: View {
                         .opacity(appeared ? 1 : 0)
                         .animation(DS.Anim.cardAppear, value: appeared)
                         .scrollSectionTransition()
-
-                    WakeBloomCard(
-                        stageMinutes: engine.stageMinutes,
-                        durationHours: engine.sleepDurationHours,
-                        sleepScore: engine.sleepScore,
-                        sleepEfficiency: engine.sleepEfficiency
-                    )
-                    .padding(.horizontal, DS.Spacing.md)
-                    .padding(.top, DS.Spacing.md)
-                    .opacity(appeared ? 1 : 0)
-                    .animation(DS.Anim.cardAppear, value: appeared)
-                    .scrollSectionTransition()
 
                     WakeCoachCard(bleManager: bleManager)
                         .padding(.horizontal, DS.Spacing.md)
@@ -409,7 +342,10 @@ struct TodayView: View {
         .scrollEdgeEffectStyle(.soft, for: .top)
         // Pull-to-refresh refreshes the body, not an invisible food list —
         // the old loadEntries()-only path refreshed nothing Today renders.
-        .refreshable { await refreshBodyMetrics() }
+        .refreshable {
+            await refreshBodyMetrics()
+            await BoardStore.shared.refresh(force: true)
+        }
     }
 
     // MARK: - Hero Section (FORMAT: BATTERY)
@@ -1340,7 +1276,7 @@ private struct LastNightCard: View {
                         .foregroundStyle(DS.Colors.textMuted)
                         .tracking(0.8)
                     Spacer()
-                    Text(String(format: "%.1fh in bed", s.inBedH))
+                    Text("Sleep \(BoardFormat.duration(hours: s.inBedH))")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(DS.Colors.textFaint)
                         .monospacedDigit()

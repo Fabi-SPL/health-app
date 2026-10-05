@@ -61,6 +61,7 @@
 		LH000030 /* LastMealCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100032; };
 		LH000031 /* PatternNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100033; };
 		LH000032 /* FABButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100034; };
+		LHB00001 /* BoardKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHB10001; };
 		LH000033 /* FABMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100035; };
 		LH000034 /* InsightCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100036; };
 		LH000035 /* LoadingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100037; };
@@ -189,6 +190,7 @@
 		LH100032 /* LastMealCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LastMealCard.swift; sourceTree = "<group>"; };
 		LH100033 /* PatternNote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PatternNote.swift; sourceTree = "<group>"; };
 		LH100034 /* FABButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FABButton.swift; sourceTree = "<group>"; };
+		LHB10001 /* BoardKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardKit.swift; sourceTree = "<group>"; };
 		LH100035 /* FABMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FABMenu.swift; sourceTree = "<group>"; };
 		LH100036 /* InsightCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightCard.swift; sourceTree = "<group>"; };
 		LH100037 /* LoadingState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadingState.swift; sourceTree = "<group>"; };
@@ -350,6 +352,7 @@
 				LH100032 /* LastMealCard.swift */,
 				LH100033 /* PatternNote.swift */,
 				LH100034 /* FABButton.swift */,
+				LHB10001 /* BoardKit.swift */,
 				LH100035 /* FABMenu.swift */,
 				LH100036 /* InsightCard.swift */,
 				LH100037 /* LoadingState.swift */,
@@ -549,6 +552,7 @@
 				LH000030 /* LastMealCard.swift in Sources */,
 				LH000031 /* PatternNote.swift in Sources */,
 				LH000032 /* FABButton.swift in Sources */,
+				LHB00001 /* BoardKit.swift in Sources */,
 				LH000033 /* FABMenu.swift in Sources */,
 				LH000034 /* InsightCard.swift in Sources */,
 				LH000035 /* LoadingState.swift in Sources */,

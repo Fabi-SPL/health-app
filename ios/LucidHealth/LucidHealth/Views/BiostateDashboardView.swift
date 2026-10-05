@@ -412,7 +412,7 @@ struct BiostateDashboardView: View {
             Text(text).font(.system(size: 12, weight: .semibold, design: .rounded)).foregroundStyle(DS.Colors.textPrimary)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
-        .background(Capsule().fill(.ultraThinMaterial).overlay(Capsule().stroke(DS.Colors.success.opacity(0.3), lineWidth: 0.5)))
+        .background(Capsule().fill(DS.Colors.raised).overlay(Capsule().stroke(DS.Colors.success.opacity(0.3), lineWidth: 0.5)))
         .padding(.top, 8)
         .transition(.move(edge: .top).combined(with: .opacity))
     }

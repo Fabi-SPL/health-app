@@ -22,14 +22,6 @@ struct WindDownView: View {
     var body: some View {
         ZStack {
             AuroraBackground().ignoresSafeArea()
-            // Vignette — dims the edges so the breathing glow + content hold the
-            // centre. Depth, instead of competing violet-on-violet.
-            RadialGradient(
-                colors: [Color.black.opacity(0.0), Color.black.opacity(0.30)],
-                center: .center, startRadius: 180, endRadius: 560
-            )
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
 
             VStack(spacing: 22) {
                 Spacer(minLength: 8)
@@ -60,20 +52,14 @@ struct WindDownView: View {
             VStack(spacing: 24) {
                 ZStack {
                     Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [accent.opacity(0.42), accent.opacity(0.0)],
-                                center: .center, startRadius: 2, endRadius: 150
-                            )
-                        )
-                        .frame(width: 300, height: 300)
-                        .blur(radius: 8)
+                        .stroke(DS.Colors.separator, lineWidth: 1)
+                        .frame(width: 260, height: 260)
                         .scaleEffect(0.70 + 0.30 * cycle)
                     Circle()
-                        .stroke(accent.opacity(0.28), lineWidth: 1)
+                        .stroke(accent.opacity(0.6), lineWidth: 1)
                         .frame(width: 188, height: 188)
                         .scaleEffect(0.80 + 0.20 * cycle)
-                    Image(systemName: "moon.stars.fill")
+                    Image(systemName: "moon")
                         .font(.system(size: 44, weight: .light))
                         .foregroundStyle(accent)
                         .symbolRenderingMode(.hierarchical)
@@ -117,16 +103,8 @@ struct WindDownView: View {
         .padding(DS.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(.ultraThinMaterial)             // real glass — the mesh refracts through
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(accent.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
-                )
+            RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
+                .fill(DS.Colors.raised)
         )
     }
 
@@ -447,8 +425,7 @@ struct NightBar: View {
 
                     // Projected wake window — floor → target, shaded.
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(LinearGradient(colors: [accent.opacity(0.25), accent.opacity(0.55)],
-                                             startPoint: .leading, endPoint: .trailing))
+                        .fill(accent.opacity(0.5))
                         .frame(width: max(6, x(targetH, w) - x(floorH, w)), height: 8)
                         .offset(x: x(floorH, w))
 
@@ -469,7 +446,6 @@ struct NightBar: View {
                             .fill(DS.Colors.teal)
                             .frame(width: 9, height: 9)
                             .offset(x: max(0, x(now, w) - 4.5))
-                            .shadow(color: DS.Colors.teal.opacity(0.6), radius: 4)
                     }
                 }
                 .frame(maxHeight: .infinity)

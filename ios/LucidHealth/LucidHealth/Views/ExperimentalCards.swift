@@ -162,7 +162,7 @@ struct BroadcastCard: View {
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 10)
-                .background(LinearGradient(colors: [DS.Colors.violet, DS.Colors.teal], startPoint: .leading, endPoint: .trailing))
+                .background(DS.Colors.accent)
                 .clipShape(Capsule())
             }
             .disabled(saving || webhookURL.isEmpty)

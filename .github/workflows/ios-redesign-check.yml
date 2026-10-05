@@ -1,0 +1,149 @@
+name: iOS redesign check
+
+# Builds redesign branches for the simulator and screenshots every screen.
+# Never signs, never archives, never touches TestFlight. Only PNGs leave the
+# runner, kept for one day: the built .app carries the baked-in login.
+
+on:
+  push:
+    branches: ['redesign/**']
+  workflow_dispatch:
+
+concurrency:
+  group: redesign-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screens:
+    runs-on: macos-15
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      - name: Inject auth credentials + Supabase config
+        run: |
+          sed -i '' 's|static let prefilledEmail: String = "BUILD_EMAIL"|static let prefilledEmail: String = "${{ secrets.EE_TASKS_EMAIL }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          sed -i '' 's|static let prefilledPassword: String = "BUILD_PASSWORD"|static let prefilledPassword: String = "${{ secrets.EE_TASKS_PASSWORD }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          sed -i '' 's|"BUILD_SUPABASE_URL"|"${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          sed -i '' 's|"BUILD_ANON_KEY"|"${{ secrets.SUPABASE_ANON_KEY }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          sed -i '' 's|"BUILD_USER_ID"|"${{ secrets.HERMES_USER_ID }}"|' \
+            ios/LucidHealth/LucidHealth/Services/SupabaseClient.swift
+          echo "Substitution applied."
+
+      - name: Pick an iPhone simulator
+        run: |
+          xcrun simctl list -j devices available > /tmp/devices.json
+          UDID=$(python3 - <<'PY'
+          import json
+          d = json.load(open("/tmp/devices.json"))["devices"]
+          rts = sorted([k for k in d if "iOS-26" in k], reverse=True)
+          prefs = ["iPhone 16 Pro", "iPhone 17 Pro", "iPhone 16", "iPhone 17"]
+          for p in prefs:
+              for rt in rts:
+                  for dev in d[rt]:
+                      if dev["name"] == p and dev.get("isAvailable", True):
+                          print(dev["udid"]); raise SystemExit
+          for rt in rts:
+              for dev in d[rt]:
+                  if dev["name"].startswith("iPhone"):
+                      print(dev["udid"]); raise SystemExit
+          PY
+          )
+          [ -n "$UDID" ] || { echo "ERROR: no iOS 26 iPhone simulator on this image"; xcrun simctl list runtimes; exit 1; }
+          echo "UDID=$UDID" >> $GITHUB_ENV
+          xcrun simctl list devices | grep "$UDID"
+
+      - name: Build for the simulator
+        working-directory: ios/LucidHealth
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project LucidHealth.xcodeproj \
+            -scheme LucidHealth \
+            -configuration Debug \
+            -destination "id=${UDID}" \
+            -derivedDataPath $RUNNER_TEMP/DD \
+            CODE_SIGNING_ALLOWED=NO \
+            ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS=NO \
+            SWIFT_VERSION=5.0 \
+            -skipPackagePluginValidation -skipMacroValidation \
+            > build.log 2>&1 || {
+              echo "=== compile errors ==="
+              grep -E "error:|fatal error" build.log | sort -u | head -80
+              tail -40 build.log
+              exit 1
+            }
+          grep -E "warning:.*(Views/|DesignSystem)" build.log | sort -u | head -30 || true
+          echo "BUILD OK"
+
+      - name: Boot, install, screenshot every screen
+        run: |
+          BUNDLE=com.fabi.lucidhealth
+          APP=$(find $RUNNER_TEMP/DD/Build/Products/Debug-iphonesimulator -maxdepth 1 -name "LucidHealth.app" | head -1)
+          [ -n "$APP" ] || { echo "ERROR: no .app built"; exit 1; }
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl status_bar "$UDID" override --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
+          xcrun simctl install "$UDID" "$APP"
+          DATA=$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)
+          mkdir -p shots
+          FAIL=""
+          shoot() {
+            NAME="$1"; ARG="$2"; WAIT="$3"
+            rm -f "$DATA/Documents/lucid-screen-$ARG.ok"
+            xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
+            sleep 1
+            SIMCTL_CHILD_TZ=Europe/Berlin xcrun simctl launch "$UDID" "$BUNDLE" -LucidScreen "$ARG" >/dev/null
+            sleep "$WAIT"
+            xcrun simctl io "$UDID" screenshot "shots/$NAME.png" >/dev/null 2>&1
+            SIZE=$(stat -f%z "shots/$NAME.png")
+            ALIVE=$(xcrun simctl spawn "$UDID" launchctl list | grep -c "$BUNDLE" || true)
+            MARK=no; [ -f "$DATA/Documents/lucid-screen-$ARG.ok" ] && MARK=yes
+            echo "$NAME: ${SIZE} bytes, running=$ALIVE, rendered=$MARK"
+            if [ "$ALIVE" = "0" ] || [ "$MARK" = "no" ] || [ "$SIZE" -lt 60000 ]; then FAIL="$FAIL $NAME"; fi
+          }
+          xcrun simctl ui "$UDID" appearance dark
+          shoot 01-today today 25
+          shoot 02-health health 30
+          shoot 02b-health-scrolled health-detail 30
+          shoot 03-food food 20
+          shoot 04-insights insights 25
+          shoot 05-wake wake 25
+          shoot 07-offline offline 20
+          shoot 09-settings settings 15
+          xcrun simctl ui "$UDID" appearance light
+          shoot 08-today-light today-light 25
+          ls -la shots
+          if [ -n "$FAIL" ]; then
+            echo "::error::blank, crashed or unrendered screens:$FAIL"
+            ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i lucid | head
+            for f in $(ls -t ~/Library/Logs/DiagnosticReports/*LucidHealth* 2>/dev/null | head -1); do
+              grep -A 40 -E "Exception Type|\"exception\"|Triggered by Thread|Thread 0 Crashed" "$f" | head -80
+            done
+            echo "SCREEN_FAIL=1" >> $GITHUB_ENV
+          fi
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redesign-screens
+          path: shots/*.png
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Fail on a blank or crashed screen
+        if: env.SCREEN_FAIL == '1'
+        run: exit 1

@@ -343,7 +343,7 @@ struct ManualFoodEntrySheet: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(DS.Colors.textSecondary)
                         .padding(10)
-                        .background(.ultraThinMaterial)
+                        .background(DS.Colors.raised)
                         .clipShape(Circle())
                 }
                 .padding(.leading, DS.Spacing.md)

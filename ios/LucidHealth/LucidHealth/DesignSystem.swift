@@ -2,21 +2,10 @@ import SwiftUI
 
 // ════════════════════════════════════════════════════════════
 // Lucid Design System — single source of truth for all UI
-// Canon: AURORA-DESIGN-SPEC.md (LOCKED 2026-06-24) + the four approved mockups
-//
-// The 5 Aurora laws:
-//   1. Depth = ONE Aurora glow + card luminance + 1px borders.
-//      Never glass, blur, reflections, specular sweeps, or dark-mode shadows.
-//   2. Tokens only — DS.Colors / DS.Font / DS.Spacing / DS.Radius.
-//      No raw Color literals, font sizes, or padding values in views.
-//   3. Every number is monospacedDigit; display type gets negative tracking;
-//      weights regular/semibold/heavy only — never medium for hierarchy.
-//   4. One section grammar: uppercase tracked micro-label above a radius-20
-//      card (15pt padding); chips and tab bar are pills; nested tiles use a
-//      smaller radius than their parent.
-//   5. Accents stay restrained: violet/teal brand + the semantic table
-//      (green/amber/red/blue). Every section reads as a DIFFERENT chart
-//      shape — never two of the same on one screen.
+// Canon: Minerva's "bedside instrument" board (2026-10-04).
+//   Flat black ground, raised plates, no glass, blur, glow or gradient.
+//   One blue for anything touchable; green/yellow/red only for recovery.
+//   Each screen: one number, one line under it, one thing to do.
 // ════════════════════════════════════════════════════════════
 
 enum DS {
@@ -32,149 +21,87 @@ enum DS {
 
     // MARK: - Corner Radius
     enum Radius {
-        static let sm: CGFloat = 10
-        static let md: CGFloat = 16
-        static let lg: CGFloat = 20
-        static let xl: CGFloat = 24
+        static let sm: CGFloat = 8
+        static let md: CGFloat = 12
+        static let lg: CGFloat = 14
+        static let xl: CGFloat = 18
         static let pill: CGFloat = 100
     }
 
-    // MARK: - Colors (Lucid Brand — adaptive light/dark)
+    // MARK: - Colors (bedside instrument: flat black, one blue, recovery trio)
     enum Colors {
-        // Backgrounds
-        static let bg = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.031, green: 0.027, blue: 0.051, alpha: 1)    // #08070d Aurora
-                : UIColor(red: 0.945, green: 0.941, blue: 0.965, alpha: 1)    // #f1f0f6 Aurora
-        })
-        static let surface = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(white: 1.0, alpha: 0.04)
-                : UIColor(white: 1.0, alpha: 0.65)
-        })
-        static let surfaceElevated = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(white: 1.0, alpha: 0.07)
-                : UIColor(white: 1.0, alpha: 0.80)
-        })
-        static let surfaceStrong = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(white: 1.0, alpha: 0.10)
-                : UIColor(white: 1.0, alpha: 0.90)
-        })
+        private static func dyn(_ dark: UInt, _ light: UInt, _ a: CGFloat = 1, _ la: CGFloat? = nil) -> Color {
+            Color(UIColor { tc in
+                let isDark = tc.userInterfaceStyle == .dark
+                let h = isDark ? dark : light
+                return UIColor(red: CGFloat((h >> 16) & 0xFF) / 255,
+                               green: CGFloat((h >> 8) & 0xFF) / 255,
+                               blue: CGFloat(h & 0xFF) / 255,
+                               alpha: isDark ? a : (la ?? a))
+            })
+        }
 
-        // AURORA card surfaces — translucent dark over the glow (lets the violet
-        // bleed through subtly) in dark, solid white in light. NO glass, NO blur,
-        // NO reflection. Depth = luminance + 1px border.
-        static let cardFill = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.086, green: 0.078, blue: 0.133, alpha: 0.55) // ~#161422 @55%
-                : UIColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)        // #ffffff
-        })
-        static let cardFillElevated = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.106, green: 0.098, blue: 0.157, alpha: 0.72) // ~#1b1928 @72%
-                : UIColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)        // #ffffff
-        })
-        /// Aurora glow — the ONE soft violet radial behind everything (top-center).
-        static let glow = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.545, green: 0.486, blue: 0.965, alpha: 0.30) // violet @30%
-                : UIColor(red: 0.486, green: 0.361, blue: 0.749, alpha: 0.16) // violet @16%
-        })
-        /// Empty ring / bar track (Aurora) — what unfilled chart segments sit on.
-        static let track = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(white: 1.0, alpha: 0.10)
-                : UIColor(red: 0.902, green: 0.894, blue: 0.933, alpha: 1) // #e6e4ee
-        })
+        // Board tokens
+        static let ground = dyn(0x000000, 0xF5F5F7)
+        static let raised = dyn(0x1D1D1F, 0xFFFFFF)
+        static let raised2 = dyn(0x2C2C2E, 0xF2F2F4)
+        static let label = dyn(0xF5F5F7, 0x1D1D1F)
+        static let secondaryLabel = dyn(0xA1A1A6, 0x6E6E73)
+        static let separator = dyn(0x424245, 0xD2D2D7)
+        static let accent = dyn(0x0A84FF, 0x0066CC)
+        static let chartNeutral = dyn(0x636366, 0xAEAEB2)
+        static let recoveryHigh = dyn(0x30D158, 0x1E7B34)
+        static let recoveryMid = dyn(0xFFD60A, 0x9A4E00)
+        static let recoveryLow = dyn(0xFF453A, 0xC4001A)
+        static let recoveryHighBg = dyn(0x0C2A14, 0xE2F3E5)
+        static let recoveryMidBg = dyn(0x2E2700, 0xFBECD9)
+        static let recoveryLowBg = dyn(0x3B0F0C, 0xFDE4E6)
+        static let primaryFill = dyn(0xF5F5F7, 0x000000)
+        static let primaryText = dyn(0x000000, 0xFFFFFF)
+        static let dim = dyn(0x6E6E73, 0xAEAEB2)
+        static let chartTrack = dyn(0x2C2C2E, 0xE3E3E8)
+
+        static func recoveryBg(_ score: Double) -> Color {
+            if score >= 67 { return recoveryHighBg }
+            if score >= 34 { return recoveryMidBg }
+            return recoveryLowBg
+        }
+
+        // Backgrounds
+        static let bg = ground
+        static let surface = raised
+        static let surfaceElevated = raised2
+        static let surfaceStrong = dyn(0x3A3A3C, 0xE8E8ED)
+
+        // Cards are opaque raised plates. No glass, no blur, no border glow.
+        static let cardFill = raised
+        static let cardFillElevated = raised2
+        static let glow = Color.clear
+        static let track = dyn(0x333336, 0xE5E5EA)
 
         // Text
-        static let textPrimary = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.91, green: 0.89, blue: 0.94, alpha: 1)       // #e8e4ef
-                : UIColor(red: 0.10, green: 0.09, blue: 0.15, alpha: 1)       // #1a1625
-        })
-        static let textSecondary = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.69, green: 0.68, blue: 0.75, alpha: 1)       // #b0adc0
-                : UIColor(red: 0.23, green: 0.22, blue: 0.35, alpha: 1)       // #3a3858
-        })
-        static let textMuted = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.42, green: 0.41, blue: 0.50, alpha: 1)       // #6b6880
-                : UIColor(red: 0.42, green: 0.41, blue: 0.53, alpha: 1)       // #6b6888
-        })
-        static let textFaint = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.29, green: 0.28, blue: 0.38, alpha: 1)       // #4a4760
-                : UIColor(red: 0.60, green: 0.60, blue: 0.66, alpha: 1)       // #9a98a8
-        })
+        static let textPrimary = label
+        static let textSecondary = secondaryLabel
+        static let textMuted = dyn(0x8E8E93, 0x6E6E73)
+        static let textFaint = dyn(0x636366, 0xAEAEB2)
 
-        // Accent (adaptive violet/teal)
-        static let violet = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.545, green: 0.486, blue: 0.965, alpha: 1)    // #8B7CF6
-                : UIColor(red: 0.486, green: 0.361, blue: 0.749, alpha: 1)    // #7c5cbf
-        })
-        static let teal = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.310, green: 0.820, blue: 0.773, alpha: 1)    // #4FD1C5
-                : UIColor(red: 0.051, green: 0.580, blue: 0.533, alpha: 1)    // #0d9488
-        })
+        // Legacy accent names. Violet is retired: it now means the one blue.
+        static let violet = accent
+        static let teal = dyn(0xC7C7CC, 0x48484A)
 
-        // Semantic (adaptive) — Aurora table: green #34d39a, amber #f5b948,
-        // red #f06464, blue #5b8def in dark; darker siblings in light.
-        static let success = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.204, green: 0.827, blue: 0.604, alpha: 1)    // #34d39a
-                : UIColor(red: 0.063, green: 0.659, blue: 0.400, alpha: 1)    // #10a866
-        })
-        static let danger = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.941, green: 0.392, blue: 0.392, alpha: 1)    // #f06464
-                : UIColor(red: 0.812, green: 0.251, blue: 0.251, alpha: 1)    // #cf4040
-        })
-        static let warning = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.961, green: 0.725, blue: 0.282, alpha: 1)    // #f5b948
-                : UIColor(red: 0.741, green: 0.490, blue: 0.063, alpha: 1)    // #bd7d10
-        })
-        static let blue = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.357, green: 0.553, blue: 0.937, alpha: 1)    // #5b8def
-                : UIColor(red: 0.247, green: 0.435, blue: 0.816, alpha: 1)    // #3f6fd0
-        })
-
-        static let pink = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.925, green: 0.282, blue: 0.600, alpha: 1)    // #EC4899
-                : UIColor(red: 0.780, green: 0.157, blue: 0.478, alpha: 1)    // #c7287a
-        })
+        // Semantic
+        static let success = recoveryHigh
+        static let danger = recoveryLow
+        static let warning = recoveryMid
+        static let blue = accent
+        static let pink = dyn(0xA1A1A6, 0x6E6E73)
         static let amber = warning
 
-        // Borders (adaptive)
-        static let border = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(white: 1.0, alpha: 0.08)
-                : UIColor(white: 0.0, alpha: 0.06)
-        })
-        static let borderStrong = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.545, green: 0.361, blue: 0.965, alpha: 0.15)
-                : UIColor(red: 0.486, green: 0.361, blue: 0.749, alpha: 0.15)
-        })
-        // Adaptive accent borders (were fixed dark-mode hex — invisible-ish in light)
-        static let borderViolet = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.545, green: 0.486, blue: 0.965, alpha: 0.18)
-                : UIColor(red: 0.486, green: 0.361, blue: 0.749, alpha: 0.22)
-        })
-        static let borderTeal = Color(UIColor { tc in
-            tc.userInterfaceStyle == .dark
-                ? UIColor(red: 0.310, green: 0.820, blue: 0.773, alpha: 0.15)
-                : UIColor(red: 0.051, green: 0.580, blue: 0.533, alpha: 0.20)
-        })
+        // Borders
+        static let border = dyn(0x2C2C2E, 0xE5E5EA)
+        static let borderStrong = separator
+        static let borderViolet = dyn(0x0A84FF, 0x0066CC, 0.35)
+        static let borderTeal = border
 
         // Recovery zones
         static func recoveryColor(_ score: Double) -> Color {
@@ -190,7 +117,7 @@ enum DS {
         }
 
         static func strainColor(_ score: Double) -> Color {
-            if score < 8 { return teal }
+            if score < 8 { return textSecondary }
             if score < 14 { return warning }
             return danger
         }
@@ -213,7 +140,7 @@ enum DS {
         static func zoneColor(_ zone: Int) -> Color {
             switch zone {
             case 0: return textMuted
-            case 1: return teal
+            case 1: return chartNeutral
             case 2: return success
             case 3: return warning
             case 4: return danger
@@ -221,18 +148,19 @@ enum DS {
             }
         }
 
+        // Deep is the only stage series that takes the accent.
         static func stageColor(_ stage: HealthEngine.SleepStage) -> Color {
             switch stage {
-            case .awake: return warning
-            case .light: return Color(hex: 0xFDE68A) // soft yellow
-            case .deep: return teal
-            case .rem: return blue
+            case .awake: return label
+            case .light: return chartNeutral
+            case .deep: return accent
+            case .rem: return dyn(0x98989D, 0x8E8E93)
             }
         }
 
         static func mindColor(_ score: Double) -> Color {
             if score >= 10 { return success }
-            if score >= 6  { return teal }
+            if score >= 6  { return textSecondary }
             if score >= 3  { return warning }
             return danger
         }
@@ -240,40 +168,40 @@ enum DS {
         static func novaColor(_ nova: Double) -> Color {
             switch Int(nova.rounded()) {
             case 1: return success
-            case 2: return teal
+            case 2: return textSecondary
             case 3: return warning
             default: return danger
             }
         }
 
-        // Gradient
+        // Kept for callers; flat, no gradient look.
         static let brandGradient = LinearGradient(
-            colors: [violet, teal],
+            colors: [accent, accent],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
     }
 
     // MARK: - Typography
-    // Sized for iPhone 15 Pro (393pt wide). Uses .rounded design.
-    // Switch to Font.custom("Outfit", ...) when font is bundled.
+    // Board scale: large title 34 semibold, section 20, body 17, secondary 15,
+    // footnote 13, axis 11. Numerals are rounded semibold, always tabular.
     enum Font {
-        static let display = SwiftUI.Font.system(size: 28, weight: .heavy, design: .rounded)
-        static let title1 = SwiftUI.Font.system(size: 22, weight: .heavy, design: .rounded)
-        static let title2 = SwiftUI.Font.system(size: 18, weight: .bold, design: .rounded)
-        static let title3 = SwiftUI.Font.system(size: 15, weight: .semibold, design: .rounded)
-        static let body = SwiftUI.Font.system(size: 14, weight: .regular)
-        static let bodyMed = SwiftUI.Font.system(size: 14, weight: .medium)
-        static let caption = SwiftUI.Font.system(size: 12, weight: .regular)
-        static let label = SwiftUI.Font.system(size: 10, weight: .bold)
-        static let micro = SwiftUI.Font.system(size: 8, weight: .bold)
+        static let display = SwiftUI.Font.system(size: 34, weight: .semibold)
+        static let title1 = SwiftUI.Font.system(size: 20, weight: .semibold)
+        static let title2 = SwiftUI.Font.system(size: 17, weight: .semibold)
+        static let title3 = SwiftUI.Font.system(size: 15, weight: .semibold)
+        static let body = SwiftUI.Font.system(size: 15, weight: .regular)
+        static let bodyMed = SwiftUI.Font.system(size: 15, weight: .medium)
+        static let caption = SwiftUI.Font.system(size: 13, weight: .regular)
+        static let label = SwiftUI.Font.system(size: 11, weight: .semibold)
+        static let micro = SwiftUI.Font.system(size: 9, weight: .semibold)
 
-        // Numeric — sized for 393pt width. monospacedDigit baked in (Aurora law
-        // #3: tabular numbers everywhere) so callers can't forget it.
-        static let heroNumber = SwiftUI.Font.system(size: 44, weight: .heavy, design: .rounded).monospacedDigit()
-        static let bigNumber = SwiftUI.Font.system(size: 24, weight: .bold, design: .rounded).monospacedDigit()
-        static let scoreNumber = SwiftUI.Font.system(size: 20, weight: .heavy, design: .rounded).monospacedDigit()
-        static let statNumber = SwiftUI.Font.system(size: 16, weight: .bold, design: .rounded).monospacedDigit()
+        static let heroNumber = SwiftUI.Font.system(size: 44, weight: .semibold, design: .rounded).monospacedDigit()
+        static let bigNumber = SwiftUI.Font.system(size: 28, weight: .semibold, design: .rounded).monospacedDigit()
+        static let scoreNumber = SwiftUI.Font.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit()
+        static let statNumber = SwiftUI.Font.system(size: 17, weight: .semibold, design: .rounded).monospacedDigit()
+        static let recoveryNumber = SwiftUI.Font.system(size: 52, weight: .semibold, design: .rounded).monospacedDigit()
+        static let clock = SwiftUI.Font.system(size: 120, weight: .semibold, design: .rounded).monospacedDigit()
     }
 
     // MARK: - Animations
@@ -328,7 +256,7 @@ enum DS {
             case .body:  return DS.Colors.violet
             case .mind:  return DS.Colors.teal
             case .care:  return DS.Colors.amber
-            case .sleep: return Color(hex: 0xA78BFA)  // soft lavender
+            case .sleep: return DS.Colors.accent
             case .food:  return DS.Colors.success
             }
         }
@@ -359,69 +287,14 @@ extension Color {
     }
 }
 
-// MARK: - Aurora Background (the LIVING canvas)
-// Solid bg + ONE soft violet glow. When given `recovery`, the glow becomes
-// ALIVE: it breathes (period paced by recovery), its intensity tracks how
-// recovered the body is (depleted = dim/cool, charged = luminous + teal life),
-// and it drifts lower/higher with the circadian phase of the day. nil recovery
-// = the calm static glow (sheets, previews). No mesh, no reflections.
+// MARK: - Ground
+// The aurora is retired: every screen sits on flat ground. The recovery
+// parameter is kept so existing call sites compile unchanged.
 struct AuroraBackground: View {
-    /// 0–100. nil = static calm glow (transient sheets keep the still canvas).
     var recovery: Double? = nil
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if let rec = recovery, rec > 0, !reduceMotion {
-            TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { ctx in
-                livingGlow(recovery: rec, date: ctx.date, breathing: true)
-            }
-        } else if let rec = recovery, rec > 0 {
-            livingGlow(recovery: rec, date: Date(), breathing: false)
-        } else {
-            staticGlow
-        }
-    }
-
-    private var staticGlow: some View {
-        ZStack {
-            DS.Colors.bg.ignoresSafeArea()
-            RadialGradient(
-                gradient: Gradient(colors: [DS.Colors.glow, DS.Colors.glow.opacity(0)]),
-                center: UnitPoint(x: 0.5, y: -0.05),
-                startRadius: 0,
-                endRadius: 520
-            )
-            .ignoresSafeArea()
-        }
-    }
-
-    private func livingGlow(recovery: Double, date: Date, breathing: Bool) -> some View {
-        let rec = max(0.0, min(1.0, recovery / 100.0))
-        let period = 7.0 - rec * 2.5                      // depleted breathes slow (~7s), charged fast (~4.5s)
-        let breath = breathing ? sin(date.timeIntervalSinceReferenceDate / period * 2 * .pi) : 0.0
-        let opacity = max(0.0, min(1.0, (0.5 + rec * 0.5) + breath * 0.09))
-        let radius: CGFloat = 500 + CGFloat(breath) * 30
-        let hour = Calendar.current.component(.hour, from: date)
-        let dayPhase = 0.5 - 0.5 * cos(Double((hour + 21) % 24) / 24.0 * 2 * .pi)  // 0 at ~3am, 1 at ~3pm
-        let yCenter = -0.10 + (1 - dayPhase) * 0.08      // sits lower at night
-        let tealMix = rec * (0.4 + dayPhase * 0.35)      // teal life only when charged + daytime
-        return ZStack {
-            DS.Colors.bg.ignoresSafeArea()
-            RadialGradient(
-                gradient: Gradient(colors: [DS.Colors.glow.opacity(opacity), DS.Colors.glow.opacity(0)]),
-                center: UnitPoint(x: 0.5, y: yCenter),
-                startRadius: 0,
-                endRadius: radius
-            )
-            .ignoresSafeArea()
-            RadialGradient(
-                gradient: Gradient(colors: [DS.Colors.teal.opacity(0.12 * tealMix), .clear]),
-                center: UnitPoint(x: 0.5, y: yCenter + 0.02),
-                startRadius: 0,
-                endRadius: radius * 0.82
-            )
-            .ignoresSafeArea()
-        }
+        DS.Colors.ground.ignoresSafeArea()
     }
 }
 
@@ -437,10 +310,6 @@ struct AuroraSubtle: ViewModifier {
                 RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
                     .fill(DS.Colors.cardFill)
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
-                    .stroke(DS.Colors.border, lineWidth: 0.5)
-            )
     }
 }
 
@@ -452,10 +321,6 @@ struct AuroraDefault: ViewModifier {
                 RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
                     .fill(DS.Colors.cardFill)
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.lg, style: .continuous)
-                    .stroke(DS.Colors.border, lineWidth: 0.5)
-            )
     }
 }
 
@@ -464,7 +329,7 @@ struct AuroraPill: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(Capsule().fill(DS.Colors.cardFillElevated))
-            .overlay(Capsule().stroke(DS.Colors.border, lineWidth: 0.5))
+            .overlay(Capsule().stroke(DS.Colors.separator, lineWidth: 1))
     }
 }
 
@@ -502,10 +367,6 @@ struct GlassCard: ViewModifier {
                     .fill(DS.Colors.cardFill)
             )
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .stroke(DS.Colors.border, lineWidth: 0.5)
-            )
     }
 }
 
@@ -524,14 +385,10 @@ struct AccentGlassCard: ViewModifier {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .fill(DS.Colors.cardFill)
             )
-            .background(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(tint.opacity(active ? 0.07 : 0.0))
-            )
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .stroke(tint.opacity(active ? 0.32 : 0.12), lineWidth: active ? 1.0 : 0.5)
+                    .stroke(tint.opacity(active ? 0.45 : 0.0), lineWidth: 1)
             )
     }
 }
@@ -547,10 +404,6 @@ struct HeroCard: ViewModifier {
                     .fill(DS.Colors.cardFillElevated)
             )
             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: DS.Radius.xl, style: .continuous)
-                    .stroke(DS.Colors.border, lineWidth: 0.5)
-            )
     }
 }
 
@@ -586,6 +439,11 @@ struct SectionHeader: View {
     var iconColor: Color = DS.Colors.violet
     var trailing: String? = nil
 
+    static func sentenceCase(_ s: String) -> String {
+        guard s == s.uppercased(), let first = s.first else { return s }
+        return String(first) + s.dropFirst().lowercased()
+    }
+
     var body: some View {
         HStack(spacing: DS.Spacing.sm) {
             if !icon.isEmpty {
@@ -593,15 +451,14 @@ struct SectionHeader: View {
                     .font(.system(size: 12))
                     .foregroundStyle(iconColor)
             }
-            Text(title)
-                .font(DS.Font.label)
-                .foregroundStyle(DS.Colors.textMuted)
-                .tracking(0.8)
+            Text(Self.sentenceCase(title))
+                .font(DS.Font.title2)
+                .foregroundStyle(DS.Colors.textPrimary)
             Spacer()
             if let trailing {
                 Text(trailing)
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(iconColor)
+                    .font(DS.Font.caption.monospacedDigit())
+                    .foregroundStyle(DS.Colors.textSecondary)
             }
         }
     }
@@ -637,7 +494,7 @@ struct ScoreRing: View {
             // Center text
             VStack(spacing: 0) {
                 Text(valueText ?? "\(Int(score))")
-                    .font(.system(size: size * 0.32, weight: .heavy, design: .rounded))
+                    .font(.system(size: size * 0.32, weight: .semibold, design: .rounded))
                     .foregroundStyle(color)
                     .monospacedDigit()
                     .contentTransition(.numericText())
@@ -806,7 +663,7 @@ struct TwoToneHeadline: View {
     var body: some View {
         (
             Text(primary)
-                .fontWeight(.heavy)
+                .fontWeight(.semibold)
                 .foregroundStyle(DS.Colors.textPrimary)
             + Text(secondary.hasPrefix(" ") ? "" : " ")
                 .foregroundStyle(DS.Colors.textPrimary)
@@ -836,10 +693,10 @@ struct GlassActionButtonStyle: ButtonStyle {
                 Group {
                     if filled {
                         RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
-                            .fill(tint.opacity(configuration.isPressed ? 0.52 : 0.70))
+                            .fill(tint.opacity(configuration.isPressed ? 0.8 : 1))
                     } else {
                         RoundedRectangle(cornerRadius: DS.Radius.md, style: .continuous)
-                            .fill(tint.opacity(configuration.isPressed ? 0.18 : 0.10))
+                            .fill(DS.Colors.raised2.opacity(configuration.isPressed ? 1 : 0.6))
                     }
                 }
             )

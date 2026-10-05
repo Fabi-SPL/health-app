@@ -28,7 +28,12 @@ struct InsightsView: View {
         ZStack {
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: DS.Spacing.md) {
-                    headerSpacer
+                    BoardInsightsTop()
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                    BoardSectionTitle(title: "More patterns")
+                        .padding(.horizontal, 20)
+                        .padding(.top, DS.Spacing.lg)
 
                     if isLoading {
                         LoadingState(label: "Analyzing patterns…")
@@ -143,15 +148,8 @@ struct InsightsView: View {
                 }
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                TwoToneHeadline(primary: "Insights", secondary: " · Patterns", font: .system(size: 17, weight: .bold, design: .rounded))
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                SettingsGearButton()
-            }
-        }
+        .background(DS.Colors.ground)
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             await loadInsights()
             withAnimation { appeared = true }

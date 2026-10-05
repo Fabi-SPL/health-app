@@ -121,7 +121,7 @@ struct QuickTagSheet: View {
                     .disabled(trimmed.isEmpty)
                 }
                 .padding(DS.Spacing.md)
-                .background(.ultraThinMaterial)
+                .background(DS.Colors.raised)
             }
         }
         .background(AuroraBackground().ignoresSafeArea())
@@ -290,7 +290,7 @@ struct QuickTagSheet: View {
         .padding(.vertical, 8)
         .background(
             Capsule()
-                .fill(.ultraThinMaterial)
+                .fill(DS.Colors.raised)
                 .overlay(Capsule().stroke(DS.Colors.success.opacity(0.30), lineWidth: 0.5))
         )
     }
