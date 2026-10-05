@@ -712,9 +712,10 @@ struct BoardSparkline: View {
                 let present = values.compactMap { $0 }
                 guard let lo = present.min(), let hi = present.max(), values.count > 1 else { return }
                 let range = max(hi - lo, 0.001)
-                let step = size.width / CGFloat(values.count - 1)
+                let step = (size.width - 12) / CGFloat(values.count - 1)
+                let lastIdx = values.lastIndex { $0 != nil }
                 func pt(_ i: Int, _ v: Double) -> CGPoint {
-                    CGPoint(x: CGFloat(i) * step, y: 6 + (1 - CGFloat((v - lo) / range)) * (size.height - 12))
+                    CGPoint(x: 6 + CGFloat(i) * step, y: 6 + (1 - CGFloat((v - lo) / range)) * (size.height - 12))
                 }
                 var path = Path()
                 var started = false
@@ -725,7 +726,7 @@ struct BoardSparkline: View {
                 ctx.stroke(path, with: .color(DS.Colors.chartNeutral), lineWidth: 1.5)
                 for (i, v) in values.enumerated() {
                     guard let v else { continue }
-                    let last = i == values.count - 1
+                    let last = i == lastIdx
                     let r: CGFloat = last ? 5 : 3.5
                     let p = pt(i, v)
                     ctx.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)),
