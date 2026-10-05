@@ -59,9 +59,8 @@ struct BodyBatteryHero: View {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(color)
-                Text("BODY BATTERY")
+                Text("Body battery")
                     .font(.system(size: 11, weight: .bold))
-                    .tracking(1.4)
                     .foregroundStyle(DS.Colors.textFaint)
                 Spacer()
                 Text("in the tank")
@@ -85,9 +84,8 @@ struct BodyBatteryHero: View {
             if trend.count >= 3 {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text("TODAY")
+                        Text("Today")
                             .font(.system(size: 9, weight: .bold))
-                            .tracking(1.2)
                             .foregroundStyle(DS.Colors.textFaint)
                         Spacer()
                         if let lo = trend.map(\.value).min(), let hi = trend.map(\.value).max() {

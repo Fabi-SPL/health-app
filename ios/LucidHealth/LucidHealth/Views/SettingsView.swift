@@ -584,7 +584,7 @@ private struct AuthStatusCard: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     // The login is baked into the build, so "not authed" always means the server is unreachable.
-                    Text(authed ? "Signed in" : (SupabaseClient.hasCredentials ? "Can't reach server" : "Signed out"))
+                    Text(authed ? "Signed in" : (SupabaseClient.hasCredentials ? "Can't reach server" : "No account in this build"))
                         .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(authed ? DS.Colors.teal : DS.Colors.pink)
 

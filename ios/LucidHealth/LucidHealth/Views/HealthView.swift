@@ -79,7 +79,7 @@ struct HealthView: View {
                 divider
                 liveCell(icon: "lungs", label: "BREATH",
                          value: engine.respiratoryRate > 0 ? String(format: "%.1f", engine.respiratoryRate) : "—",
-                         unit: "/min", color: DS.Colors.violet, size: .medium)
+                         unit: "/min", color: DS.Colors.teal, size: .medium)
                 divider
                 liveCell(icon: "thermometer.medium", label: "TEMP",
                          value: bleManager.skinTemperature > 0 ? String(format: "%.1f", bleManager.skinTemperature) : "—",
@@ -286,10 +286,9 @@ struct HealthView: View {
                 // Score + duration row
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("SCORE")
+                        Text("Score")
                             .font(DS.Font.label)
                             .foregroundStyle(DS.Colors.textFaint)
-                            .tracking(0.8)
                         HStack(alignment: .firstTextBaseline, spacing: 3) {
                             Text(engine.sleepScore > 0 ? "\(Int(engine.sleepScore))" : "—")
                                 .font(.system(size: 32, weight: .heavy, design: .rounded))
@@ -306,10 +305,9 @@ struct HealthView: View {
                         let h = Int(engine.sleepDurationHours)
                         let m = Int((engine.sleepDurationHours - Double(h)) * 60)
                         VStack(alignment: .trailing, spacing: 2) {
-                            Text("DURATION")
+                            Text("Duration")
                                 .font(DS.Font.label)
                                 .foregroundStyle(DS.Colors.textFaint)
-                                .tracking(0.8)
                             Text("\(h)h \(m)m")
                                 .font(.system(size: 18, weight: .bold, design: .rounded))
                                 .foregroundStyle(DS.Colors.textPrimary)
@@ -318,10 +316,9 @@ struct HealthView: View {
                     }
                     if engine.sleepEfficiency > 0 {
                         VStack(alignment: .trailing, spacing: 2) {
-                            Text("EFFICIENCY")
+                            Text("Efficiency")
                                 .font(DS.Font.label)
                                 .foregroundStyle(DS.Colors.textFaint)
-                                .tracking(0.8)
                             Text(String(format: "%.0f%%", engine.sleepEfficiency))
                                 .font(.system(size: 18, weight: .bold, design: .rounded))
                                 .foregroundStyle(DS.Colors.violet)
@@ -428,10 +425,9 @@ struct HealthView: View {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
                 HStack(alignment: .firstTextBaseline, spacing: DS.Spacing.lg) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("STRAIN")
+                        Text("Strain")
                             .font(DS.Font.label)
                             .foregroundStyle(DS.Colors.textFaint)
-                            .tracking(0.8)
                         HStack(alignment: .firstTextBaseline, spacing: 3) {
                             Text(engine.strainScore > 0 ? String(format: "%.1f", engine.strainScore) : "—")
                                 .font(.system(size: 32, weight: .heavy, design: .rounded))
@@ -494,10 +490,9 @@ struct HealthView: View {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 12))
                     .foregroundStyle(DS.Colors.violet)
-                Text("BODY BATTERY")
+                Text("Body battery")
                     .font(DS.Font.label)
                     .foregroundStyle(DS.Colors.textMuted)
-                    .tracking(0.8)
                 AmbientLiveDot(
                     state: bleManager.connectionState == .connected ? .connected
                         : (bleManager.connectionState == .scanning ? .scanning : .disconnected)
@@ -514,8 +509,8 @@ struct HealthView: View {
 
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(level > 0 ? "\(Int(level))" : "—")
-                    .font(.system(size: 52, weight: .heavy, design: .rounded))
-                    .foregroundStyle(battColor)
+                    .font(.system(size: 52, weight: .semibold, design: .rounded))
+                    .foregroundStyle(DS.Colors.label)
                     .monospacedDigit()
                     .contentTransition(.numericText())
                 Text("/ 100")
@@ -530,8 +525,7 @@ struct HealthView: View {
                             .fill(DS.Colors.surfaceElevated)
                             .frame(height: 11)
                         Capsule()
-                            .fill(LinearGradient(colors: [DS.Colors.amber, battColor],
-                                                 startPoint: .leading, endPoint: .trailing))
+                            .fill(DS.Colors.accent)
                             .frame(width: max(8, geo.size.width * CGFloat(min(level, 100) / 100)), height: 11)
                             .animation(DS.Anim.ringFill, value: level)
                     }
@@ -544,10 +538,9 @@ struct HealthView: View {
                 Image(systemName: "brain")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(DS.Colors.teal)
-                Text("COGNITIVE")
+                Text("Cognitive")
                     .font(DS.Font.label)
                     .foregroundStyle(DS.Colors.textMuted)
-                    .tracking(0.6)
                 Spacer()
                 Text(engine.cognitiveCapacity > 0 ? "\(Int(engine.cognitiveCapacity))" : "—")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
@@ -594,10 +587,9 @@ struct HealthView: View {
                 VStack(alignment: .leading, spacing: DS.Spacing.sm) {
                     if engine.lastAlcoholImpact > 5 {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("ALCOHOL EFFECT")
+                            Text("Alcohol effect")
                                 .font(DS.Font.label)
                                 .foregroundStyle(DS.Colors.textFaint)
-                                .tracking(0.8)
                             Text(String(format: "%.0f%%", engine.lastAlcoholImpact))
                                 .font(.system(size: 28, weight: .heavy, design: .rounded))
                                 .foregroundStyle(DS.Colors.amber)

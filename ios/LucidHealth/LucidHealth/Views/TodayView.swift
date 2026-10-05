@@ -1074,10 +1074,9 @@ private struct WindDownCoachCard: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(accent)
                     .symbolRenderingMode(.hierarchical)
-                Text("SLEEP READINESS")
+                Text("Sleep readiness")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(DS.Colors.textFaint)
-                    .tracking(1.2)
                 Spacer()
                 if let s = sri {
                     HStack(alignment: .firstTextBaseline, spacing: 2) {
@@ -1271,10 +1270,9 @@ private struct LastNightCard: View {
         if let s = sleep {
             VStack(alignment: .leading, spacing: DS.Spacing.sm) {
                 HStack {
-                    Text("LAST NIGHT")
+                    Text("Last night")
                         .font(DS.Font.label)
                         .foregroundStyle(DS.Colors.textMuted)
-                        .tracking(0.8)
                     Spacer()
                     Text("Sleep \(BoardFormat.duration(hours: s.inBedH))")
                         .font(.system(size: 11, weight: .medium))

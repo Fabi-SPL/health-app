@@ -2463,10 +2463,9 @@ private struct QuickLogEditorSheet: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("PORTION")
+                Text("Portion")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(DS.Colors.textFaint)
-                    .tracking(1)
                 PortionSizePicker(selection: $portion)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2548,10 +2547,9 @@ private struct QuickLogEditorSheet: View {
 
     private var timeCard: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-            Text("WHEN")
+            Text("When")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(DS.Colors.textFaint)
-                .tracking(1)
             DatePicker("", selection: $eatenAt, in: ...Date(), displayedComponents: [.date, .hourAndMinute])
                 .datePickerStyle(.compact)
                 .labelsHidden()

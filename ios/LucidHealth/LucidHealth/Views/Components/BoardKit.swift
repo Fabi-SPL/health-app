@@ -1248,7 +1248,12 @@ struct BoardHealthTop: View {
             .padding(.bottom, 16)
 
             if let s = night.start, let e = night.end, !store.stages.isEmpty {
-                BoardStageChart(segments: store.stages, start: s, end: e).padding(.bottom, 16)
+                BoardStageChart(segments: store.stages, start: s, end: e).padding(.bottom, 6)
+                Text("Chart is the strap's live stage call, minute by minute. Totals are the scored night.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(DS.Colors.dim)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 16)
             }
             BoardStageTotals(night: night).padding(.bottom, 16)
             BoardExpandable(title: "Stage minutes and sleep quality") {

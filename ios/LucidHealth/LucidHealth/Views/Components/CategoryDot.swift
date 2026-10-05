@@ -8,13 +8,11 @@ struct CategoryDot: View {
     var body: some View {
         HStack(spacing: 5) {
             Circle()
-                .fill(category.color)
-                .frame(width: 8, height: 8)
-            Text(category.label)
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundStyle(DS.Colors.textMuted)
-                .tracking(0.8)
-                .textCase(.uppercase)
+                .fill(DS.Colors.dim)
+                .frame(width: 6, height: 6)
+            Text(category.label.capitalized)
+                .font(.system(size: 13))
+                .foregroundStyle(DS.Colors.secondaryLabel)
         }
     }
 }
