@@ -41,6 +41,11 @@
 		LH00001F /* lucid-halo.caf in Resources */ = {isa = PBXBuildFile; fileRef = LH10001F; };
 		/* Views */
 		LH000020 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100022; };
+		LHV00014 /* MealV3Sheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10014; };
+		LHV00013 /* FoodV3Sheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10013; };
+		LHV00012 /* LogV3Sheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10012; };
+		LHV00011 /* StrainBlockV3Sheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10011; };
+		LHV00010 /* RecoveryV3Sheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10010; };
 		LHV00009 /* StrainV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10009; };
 		LHV00008 /* StrainDayModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10008; };
 		LHV00007 /* TodayV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10007; };
@@ -179,6 +184,11 @@
 		LH100021 /* LucidHealth.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LucidHealth.entitlements; sourceTree = "<group>"; };
 		/* Views */
 		LH100022 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		LHV10014 /* MealV3Sheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MealV3Sheet.swift; sourceTree = "<group>"; };
+		LHV10013 /* FoodV3Sheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoodV3Sheet.swift; sourceTree = "<group>"; };
+		LHV10012 /* LogV3Sheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogV3Sheet.swift; sourceTree = "<group>"; };
+		LHV10011 /* StrainBlockV3Sheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrainBlockV3Sheet.swift; sourceTree = "<group>"; };
+		LHV10010 /* RecoveryV3Sheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryV3Sheet.swift; sourceTree = "<group>"; };
 		LHV10009 /* StrainV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrainV3View.swift; sourceTree = "<group>"; };
 		LHV10008 /* StrainDayModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrainDayModel.swift; sourceTree = "<group>"; };
 		LHV10007 /* TodayV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayV3View.swift; sourceTree = "<group>"; };
@@ -332,6 +342,11 @@
 			isa = PBXGroup;
 			children = (
 				LH100022 /* RootTabView.swift */,
+				LHV10014 /* MealV3Sheet.swift */,
+				LHV10013 /* FoodV3Sheet.swift */,
+				LHV10012 /* LogV3Sheet.swift */,
+				LHV10011 /* StrainBlockV3Sheet.swift */,
+				LHV10010 /* RecoveryV3Sheet.swift */,
 				LHV10009 /* StrainV3View.swift */,
 				LHV10008 /* StrainDayModel.swift */,
 				LHV10007 /* TodayV3View.swift */,
@@ -560,6 +575,11 @@
 				LH00001C /* GeminiClient.swift in Sources */,
 				LH00001D /* OpenFoodFactsClient.swift in Sources */,
 				LH000020 /* RootTabView.swift in Sources */,
+				LHV00014 /* MealV3Sheet.swift in Sources */,
+				LHV00013 /* FoodV3Sheet.swift in Sources */,
+				LHV00012 /* LogV3Sheet.swift in Sources */,
+				LHV00011 /* StrainBlockV3Sheet.swift in Sources */,
+				LHV00010 /* RecoveryV3Sheet.swift in Sources */,
 				LHV00009 /* StrainV3View.swift in Sources */,
 				LHV00008 /* StrainDayModel.swift in Sources */,
 				LHV00007 /* TodayV3View.swift in Sources */,

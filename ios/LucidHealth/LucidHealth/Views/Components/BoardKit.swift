@@ -10,6 +10,11 @@ enum LucidScreen: String {
     case todayMorning = "today-morning"
     case todayEvening = "today-evening"
     case strainRiver = "strain-river"
+    case log
+    case foodList = "food-list"
+    case mealDetail = "meal-detail"
+    case recovery
+    case blockDetail = "block-detail"
 
     static let current: LucidScreen? = {
         #if DEBUG
@@ -24,7 +29,7 @@ enum LucidScreen: String {
     var tab: AppTab {
         switch self {
         case .health, .healthDetail: return .health
-        case .strain, .strainRiver: return .strain
+        case .strain, .strainRiver, .blockDetail: return .strain
         case .insights: return .insights
         default: return .today
         }

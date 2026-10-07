@@ -124,9 +124,13 @@ jobs:
           shoot 03b-strain-river strain-river 30
           shoot 04-insights insights 25
           shoot 05-wake wake 25
-          shoot 06-food-sheet food 20
           shoot 07-offline offline 20
           shoot 09-settings settings 15
+          shoot 10-log log 20
+          shoot 11-food-list food-list 20
+          shoot 12-meal-detail meal-detail 25
+          shoot 13-recovery recovery 20
+          shoot 14-block-detail block-detail 30
           xcrun simctl ui "$UDID" appearance light
           shoot 08-today-light today-light 25
           shoot 08b-today-morning-light today-morning 25

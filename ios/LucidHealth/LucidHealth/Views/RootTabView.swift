@@ -10,7 +10,6 @@ struct RootTabView: View {
     @State private var showWake = LucidScreen.current == .wake
     @State private var wakeFireDate: Date?
     @State private var showSettingsShot = false
-    @State private var showFoodShot = false
     @State private var showWindDown = false
     @StateObject private var modeStore = AppModeStore()
     @Environment(\.scenePhase) private var scenePhase
@@ -56,10 +55,6 @@ struct RootTabView: View {
                 .environmentObject(bleManager)
                 .lucidRendered(.settings)
         }
-        .sheet(isPresented: $showFoodShot) {
-            NavigationStack { FoodView() }
-                .environmentObject(bleManager)
-        }
         .task {
             modeStore.start(engine: bleManager.healthEngine)
             maybeShowWindDown(modeStore.current)
@@ -67,9 +62,6 @@ struct RootTabView: View {
             case .settings:
                 try? await Task.sleep(for: .seconds(1.5))
                 showSettingsShot = true
-            case .food:
-                try? await Task.sleep(for: .seconds(1.5))
-                showFoodShot = true
             default:
                 break
             }

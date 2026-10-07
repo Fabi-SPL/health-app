@@ -6,6 +6,11 @@ enum TodayV3Mode {
     case morning, day, evening, early
 }
 
+enum TodayV3SheetKind: String, Identifiable {
+    case log, food, recovery
+    var id: String { rawValue }
+}
+
 struct TodayV3View: View {
     @EnvironmentObject private var bleManager: BLEManager
 
@@ -34,7 +39,7 @@ private struct TodayV3Screen: View {
     @State private var yesterdayStrain: Double?
     @State private var dayBattery: [StrainBatteryPoint] = []
     @State private var dayBatteryLive = false
-    @State private var showLog = false
+    @State private var sheet: TodayV3SheetKind? = nil
 
     private let tick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
@@ -61,9 +66,16 @@ private struct TodayV3Screen: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await load() } }
         }
-        .sheet(isPresented: $showLog) {
-            NavigationStack { FoodView() }
-                .environmentObject(ble)
+        .task { await openForScreenshot() }
+        .sheet(item: $sheet) { (k: TodayV3SheetKind) in
+            switch k {
+            case .log:
+                LogV3Sheet().environmentObject(ble)
+            case .food:
+                FoodV3Sheet().environmentObject(ble)
+            case .recovery:
+                RecoveryV3Sheet().environmentObject(ble)
+            }
         }
         .lucidRendered(.today, .todayLight, .todayMorning, .todayEvening)
     }
@@ -183,6 +195,20 @@ extension TodayV3Screen {
 
 extension TodayV3Screen {
     @MainActor
+    func openForScreenshot() async {
+        guard let s = LucidScreen.current else { return }
+        var kind: TodayV3SheetKind? = nil
+        switch s {
+        case .log: kind = .log
+        case .foodList, .mealDetail: kind = .food
+        case .recovery: kind = .recovery
+        default: kind = nil
+        }
+        guard let k = kind else { return }
+        try? await Task.sleep(for: .seconds(1.5))
+        sheet = k
+    }
+
     func load() async {
         now = Date()
         await ble.syncTonightPlan()
@@ -261,7 +287,7 @@ extension TodayV3Screen {
     var header: some View {
         V3Header(date: mode == .early ? "You woke early" : V3Format.dayTitle(now), title: "Today") {
             if mode != .early {
-                V3IconButton(symbol: "plus") { showLog = true }
+                V3IconButton(symbol: "plus") { sheet = .log }
             }
             V3StrapPill()
             V3KeledButton()
@@ -342,6 +368,8 @@ extension TodayV3Screen {
         if let r = recovery {
             V3HeroRing(value: zero(r), progress: min(r / 100, 1), color: V3.recovery(r), label: "Recovery",
                        sub: V3.recoveryWord(r), subColor: V3.recovery(r))
+                .contentShape(Rectangle())
+                .onTapGesture { sheet = .recovery }
         } else {
             V3HeroRing(value: todayV3Dash, unit: "", progress: 0, color: V3.t3, label: "Recovery", sub: "Not synced")
         }
@@ -716,13 +744,19 @@ extension TodayV3Screen {
     var batteryRightText: String? {
         let pts = dayBattery.sorted(by: { $0.at < $1.at })
         guard let f = pts.first, let l = pts.last else { return nil }
+        _ = l
+        return "\(zero(f.value)) at wake"
+    }
+
+    var batteryRateText: String? {
+        let pts = dayBattery.sorted(by: { $0.at < $1.at })
+        guard let f = pts.first, let l = pts.last else { return nil }
         var parts: [String] = dayBatteryLive ? [] : ["estimated"]
-        parts.append("\(zero(f.value)) at wake")
         let hrs: Double = l.at.timeIntervalSince(f.at) / 3600
         if hrs >= 1.5 && f.value > l.value {
             parts.append(V3Format.signed(-(f.value - l.value) / hrs, decimals: 1) + " an hour")
         }
-        return parts.joined(separator: " \u{00B7} ")
+        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
     }
 
     @ViewBuilder
@@ -737,12 +771,22 @@ extension TodayV3Screen {
     var batteryCard: some View {
         V3Card {
             VStack(alignment: .leading, spacing: 12) {
-                V3CardHeader(icon: "bolt.fill", iconColor: V3.energy, title: "Body battery",
-                             trailing: batteryRightText, chevron: true)
+                V3CardHeader(icon: "bolt.fill", iconColor: V3.energy, title: "Body battery", chevron: true)
                 if batteryPoints.count < 2 {
                     V3EmptyLine(text: "Battery not synced yet")
                 } else {
-                    V3BigNumber(value: zero(dayBattery.max(by: { $0.at < $1.at })?.value ?? 0), unit: "/ 100")
+                    HStack(alignment: .lastTextBaseline) {
+                        V3BigNumber(value: zero(dayBattery.max(by: { $0.at < $1.at })?.value ?? 0), unit: "/ 100")
+                        Spacer(minLength: 8)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            if let w = batteryRightText {
+                                Text(w).font(V3Font.text(13)).foregroundStyle(V3.t2)
+                            }
+                            if let r = batteryRateText {
+                                Text(r).font(V3Font.text(12)).foregroundStyle(V3.t3)
+                            }
+                        }
+                    }
                     batteryChart
                 }
             }
@@ -816,7 +860,7 @@ extension TodayV3Screen {
 
 extension TodayV3Screen {
     var foodLine: some View {
-        Button { showLog = true } label: {
+        Button { sheet = .food } label: {
             V3Card {
                 HStack(spacing: 14) {
                     foodRings

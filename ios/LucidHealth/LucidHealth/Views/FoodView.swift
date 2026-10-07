@@ -1984,6 +1984,12 @@ private struct DetailItemRow: View {
 
 // MARK: - Meal Builder (combine barcode + described + photo into one entry)
 
+/// The multi-source meal builder, reachable from the V3 Log sheet without opening up its internals.
+struct MealBuilderV3Entry: View {
+    let onSaved: (FoodEntry) -> Void
+    var body: some View { MealBuilderSheet(onSaved: onSaved) }
+}
+
 private struct MealBuilderSheet: View {
     let onSaved: (FoodEntry) -> Void
     @Environment(\.dismiss) private var dismiss

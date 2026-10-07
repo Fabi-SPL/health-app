@@ -8,6 +8,7 @@ struct StrainV3View: View {
     @AppStorage("strainView") private var mode: String = "Rings"
     @State private var selectedDay: Date = Calendar.current.startOfDay(for: Date())
     @State private var nameTarget: StrainDayBlock? = nil
+    @State private var blockTarget: StrainDayBlock? = nil
     @State private var liveSession: SupabaseClient.WorkoutSession? = nil
     @State private var openSession: SupabaseClient.WorkoutSession? = nil
     @State private var workoutNote: String? = nil
@@ -31,9 +32,19 @@ struct StrainV3View: View {
             }
             .scrollIndicators(.hidden)
             .refreshable { await reload() }
+            .sheet(item: $blockTarget) { (b: StrainDayBlock) in
+                if let d = model.data {
+                    StrainBlockV3Sheet(block: b, day: d, onChanged: { Task { await reload() } })
+                        .environmentObject(bleManager)
+                }
+            }
         }
         .task(id: selectedDay) {
             await model.load(day: selectedDay, engine: bleManager.healthEngine)
+            if LucidScreen.current == .blockDetail, blockTarget == nil, let top = model.data?.topBlock {
+                try? await Task.sleep(for: .seconds(1))
+                blockTarget = top
+            }
         }
         .task { await refreshWorkouts() }
         .onAppear {
@@ -156,7 +167,8 @@ struct StrainV3View: View {
             if d.partsVisible { StrainPartsRow(d: d, top: 8) }
             loadCallout(d)
             StrainDayCard(d: d)
-            StrainBlocksCard(d: d, onName: { (b: StrainDayBlock) in nameTarget = b })
+            StrainBlocksCard(d: d, onName: { (b: StrainDayBlock) in nameTarget = b },
+                             onOpen: { (b: StrainDayBlock) in blockTarget = b })
             if d.hasBattery { StrainDrainCard(d: d) }
             StrainHRCard(d: d)
         } else {
@@ -615,6 +627,7 @@ private struct StrainDayChart: View {
 private struct StrainBlocksCard: View {
     let d: StrainDayData
     let onName: (StrainDayBlock) -> Void
+    var onOpen: (StrainDayBlock) -> Void = { _ in }
 
     var body: some View {
         V3Card {
@@ -652,7 +665,7 @@ private struct StrainBlocksCard: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            if b.kind == .unknown { onName(b) }
+            onOpen(b)
         }
     }
 
