@@ -341,6 +341,7 @@ struct LogV3Sheet: View {
                 Image(systemName: symbol)
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(V3.kcal)
+                    .frame(height: 24)
                 Text(label).font(V3Font.text(12, .semibold)).foregroundStyle(V3.t1)
             }
             .frame(maxWidth: .infinity)

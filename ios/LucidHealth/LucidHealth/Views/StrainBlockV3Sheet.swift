@@ -314,7 +314,11 @@ private struct BlockV3HRChart: View {
                 zl.addLine(to: CGPoint(x: w, y: yOf(zone)))
                 ctx.stroke(zl, with: .color(V3.heart.opacity(0.55)), style: StrokeStyle(lineWidth: 1.5, dash: [3, 4]))
                 let zt = Text("zone 1 starts at " + String(Int(zone))).font(V3Font.text(12)).foregroundColor(V3.t2)
-                ctx.draw(zt, at: CGPoint(x: w, y: yOf(zone) - 6), anchor: .bottomTrailing)
+                let rz = ctx.resolve(zt)
+                let sz: CGSize = rz.measure(in: CGSize(width: w, height: 40))
+                let chip = CGRect(x: w - sz.width - 10, y: yOf(zone) - sz.height - 9, width: sz.width + 10, height: sz.height + 5)
+                ctx.fill(Path(roundedRect: chip, cornerRadius: 6), with: .color(V3.card.opacity(0.9)))
+                ctx.draw(rz, at: CGPoint(x: w - 5, y: yOf(zone) - 6.5), anchor: .bottomTrailing)
             }
             if avg > 0 {
                 var al = Path()

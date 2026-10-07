@@ -517,20 +517,20 @@ private enum MealV3Net {
     static func summary(_ readings: [MealV3Reading], mealAt: Date) -> MealV3HRSummary {
         var pre: [Double] = []
         var post: [Double] = []
-        var sums = [Double](repeating: 0, count: 50)
-        var counts = [Int](repeating: 0, count: 50)
+        var sums = [Double](repeating: 0, count: 20)
+        var counts = [Int](repeating: 0, count: 20)
         for r in readings {
             let m = r.at.timeIntervalSince(mealAt) / 60
             if m < -20 || m > 80 { continue }
             if m < 0 { pre.append(r.bpm) }
             if m >= 0 && m <= 40 { post.append(r.bpm) }
-            let idx = min(49, max(0, Int(((m + 20) / 2).rounded(.down))))
+            let idx = min(19, max(0, Int(((m + 20) / 5).rounded(.down))))
             sums[idx] += r.bpm
             counts[idx] += 1
         }
         var points: [MealV3HRPoint] = []
-        for i in 0..<50 where counts[i] > 0 {
-            points.append(MealV3HRPoint(id: i, minute: -19 + Double(i) * 2, bpm: sums[i] / Double(counts[i])))
+        for i in 0..<20 where counts[i] > 0 {
+            points.append(MealV3HRPoint(id: i, minute: -17.5 + Double(i) * 5, bpm: sums[i] / Double(counts[i])))
         }
         let baseline: Double? = pre.count >= 5 ? pre.reduce(0, +) / Double(pre.count) : nil
         let postMean: Double? = post.count >= 5 ? post.reduce(0, +) / Double(post.count) : nil

@@ -188,8 +188,8 @@ struct FoodV3Sheet: View {
         let c: Double = m.carbs ?? 0
         let f: Double = m.fat ?? 0
         let carbShare: CGFloat = (c + f) > 0 ? CGFloat(c / (c + f)) : 0
-        let carbText: String = m.carbs == nil ? "n/a" : FoodV3Text.grams(m.carbs) + " g"
-        let fatText: String = m.fat == nil ? "n/a" : FoodV3Text.grams(m.fat) + " g"
+        let carbText: String = m.carbs == nil ? "\u{2013}" : FoodV3Text.grams(m.carbs) + " g"
+        let fatText: String = m.fat == nil ? "\u{2013}" : FoodV3Text.grams(m.fat) + " g"
         return VStack(alignment: .leading, spacing: 0) {
             Text("Carbs · Fat").font(V3Font.text(12, .semibold)).foregroundStyle(V3.t2)
             Text(carbText + " · " + fatText)
@@ -392,7 +392,7 @@ private enum FoodV3Text {
     }
 
     static func grams(_ v: Double?) -> String {
-        guard let v = v else { return "n/a" }
+        guard let v = v else { return "\u{2013}" }
         return String(format: "%.0f", v)
     }
 
