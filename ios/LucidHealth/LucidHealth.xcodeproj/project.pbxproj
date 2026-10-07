@@ -41,6 +41,14 @@
 		LH00001F /* lucid-halo.caf in Resources */ = {isa = PBXBuildFile; fileRef = LH10001F; };
 		/* Views */
 		LH000020 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100022; };
+		LHV00009 /* StrainV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10009; };
+		LHV00008 /* StrainDayModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10008; };
+		LHV00007 /* TodayV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10007; };
+		LHV00006 /* LiveRideV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10006; };
+		LHV00005 /* WindDownV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10005; };
+		LHV00004 /* WakeV3Screen.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10004; };
+		LHV00003 /* InsightsV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10003; };
+		LHV00002 /* HealthV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10002; };
 		LH000021 /* TodayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100023; };
 		LH000022 /* HealthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100024; };
 		LH000023 /* FoodView.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100025; };
@@ -62,6 +70,7 @@
 		LH000031 /* PatternNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100033; };
 		LH000032 /* FABButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100034; };
 		LHB00001 /* BoardKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHB10001; };
+		LHV00001 /* V3Kit.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10001; };
 		LH000033 /* FABMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100035; };
 		LH000034 /* InsightCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100036; };
 		LH000035 /* LoadingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = LH100037; };
@@ -170,6 +179,14 @@
 		LH100021 /* LucidHealth.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = LucidHealth.entitlements; sourceTree = "<group>"; };
 		/* Views */
 		LH100022 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		LHV10009 /* StrainV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrainV3View.swift; sourceTree = "<group>"; };
+		LHV10008 /* StrainDayModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrainDayModel.swift; sourceTree = "<group>"; };
+		LHV10007 /* TodayV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayV3View.swift; sourceTree = "<group>"; };
+		LHV10006 /* LiveRideV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveRideV3View.swift; sourceTree = "<group>"; };
+		LHV10005 /* WindDownV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindDownV3View.swift; sourceTree = "<group>"; };
+		LHV10004 /* WakeV3Screen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeV3Screen.swift; sourceTree = "<group>"; };
+		LHV10003 /* InsightsV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsV3View.swift; sourceTree = "<group>"; };
+		LHV10002 /* HealthV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthV3View.swift; sourceTree = "<group>"; };
 		LH100023 /* TodayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayView.swift; sourceTree = "<group>"; };
 		LH100024 /* HealthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthView.swift; sourceTree = "<group>"; };
 		LH100025 /* FoodView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoodView.swift; sourceTree = "<group>"; };
@@ -191,6 +208,7 @@
 		LH100033 /* PatternNote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PatternNote.swift; sourceTree = "<group>"; };
 		LH100034 /* FABButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FABButton.swift; sourceTree = "<group>"; };
 		LHB10001 /* BoardKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardKit.swift; sourceTree = "<group>"; };
+		LHV10001 /* V3Kit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V3Kit.swift; sourceTree = "<group>"; };
 		LH100035 /* FABMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FABMenu.swift; sourceTree = "<group>"; };
 		LH100036 /* InsightCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightCard.swift; sourceTree = "<group>"; };
 		LH100037 /* LoadingState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadingState.swift; sourceTree = "<group>"; };
@@ -314,6 +332,14 @@
 			isa = PBXGroup;
 			children = (
 				LH100022 /* RootTabView.swift */,
+				LHV10009 /* StrainV3View.swift */,
+				LHV10008 /* StrainDayModel.swift */,
+				LHV10007 /* TodayV3View.swift */,
+				LHV10006 /* LiveRideV3View.swift */,
+				LHV10005 /* WindDownV3View.swift */,
+				LHV10004 /* WakeV3Screen.swift */,
+				LHV10003 /* InsightsV3View.swift */,
+				LHV10002 /* HealthV3View.swift */,
 				LH100023 /* TodayView.swift */,
 				LH100024 /* HealthView.swift */,
 				LH100025 /* FoodView.swift */,
@@ -353,6 +379,7 @@
 				LH100033 /* PatternNote.swift */,
 				LH100034 /* FABButton.swift */,
 				LHB10001 /* BoardKit.swift */,
+				LHV10001 /* V3Kit.swift */,
 				LH100035 /* FABMenu.swift */,
 				LH100036 /* InsightCard.swift */,
 				LH100037 /* LoadingState.swift */,
@@ -533,6 +560,14 @@
 				LH00001C /* GeminiClient.swift in Sources */,
 				LH00001D /* OpenFoodFactsClient.swift in Sources */,
 				LH000020 /* RootTabView.swift in Sources */,
+				LHV00009 /* StrainV3View.swift in Sources */,
+				LHV00008 /* StrainDayModel.swift in Sources */,
+				LHV00007 /* TodayV3View.swift in Sources */,
+				LHV00006 /* LiveRideV3View.swift in Sources */,
+				LHV00005 /* WindDownV3View.swift in Sources */,
+				LHV00004 /* WakeV3Screen.swift in Sources */,
+				LHV00003 /* InsightsV3View.swift in Sources */,
+				LHV00002 /* HealthV3View.swift in Sources */,
 				LH000021 /* TodayView.swift in Sources */,
 				LH000022 /* HealthView.swift in Sources */,
 				LH000023 /* FoodView.swift in Sources */,
@@ -553,6 +588,7 @@
 				LH000031 /* PatternNote.swift in Sources */,
 				LH000032 /* FABButton.swift in Sources */,
 				LHB00001 /* BoardKit.swift in Sources */,
+				LHV00001 /* V3Kit.swift in Sources */,
 				LH000033 /* FABMenu.swift in Sources */,
 				LH000034 /* InsightCard.swift in Sources */,
 				LH000035 /* LoadingState.swift in Sources */,

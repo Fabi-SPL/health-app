@@ -4,9 +4,12 @@ import Charts
 // MARK: - Screenshot harness (DEBUG only, driven by -LucidScreen <name>)
 
 enum LucidScreen: String {
-    case today, health, food, insights, wake, offline, settings
+    case today, health, food, insights, wake, offline, settings, strain
     case healthDetail = "health-detail"
     case todayLight = "today-light"
+    case todayMorning = "today-morning"
+    case todayEvening = "today-evening"
+    case strainRiver = "strain-river"
 
     static let current: LucidScreen? = {
         #if DEBUG
@@ -21,7 +24,7 @@ enum LucidScreen: String {
     var tab: AppTab {
         switch self {
         case .health, .healthDetail: return .health
-        case .food, .offline: return .food
+        case .strain, .strainRiver: return .strain
         case .insights: return .insights
         default: return .today
         }
@@ -1074,10 +1077,10 @@ struct BoardTodayTop: View {
                 if let last = todaysMeals.first {
                     BoardActionRow(icon: "fork.knife", title: "Log \(mealWord)",
                                    subtitle: "Last: \(BoardFormat.clock(last.capturedAt)), \(BoardMealRow.title(last))",
-                                   action: { selectTab(.food) })
+                                   action: { selectTab(.today) })
                 } else {
                     BoardActionRow(icon: "fork.knife", title: "Log \(mealWord)", subtitle: "Nothing logged yet today",
-                                   action: { selectTab(.food) })
+                                   action: { selectTab(.today) })
                 }
                 if let s = night.start, let e = night.end {
                     BoardActionRow(icon: "moon", title: "Same bedtime as last night",

@@ -116,15 +116,24 @@ jobs:
           }
           xcrun simctl ui "$UDID" appearance dark
           shoot 01-today today 25
+          shoot 01b-today-morning today-morning 25
+          shoot 01c-today-evening today-evening 25
           shoot 02-health health 30
           shoot 02b-health-scrolled health-detail 30
-          shoot 03-food food 20
+          shoot 03-strain strain 30
+          shoot 03b-strain-river strain-river 30
           shoot 04-insights insights 25
           shoot 05-wake wake 25
+          shoot 06-food-sheet food 20
           shoot 07-offline offline 20
           shoot 09-settings settings 15
           xcrun simctl ui "$UDID" appearance light
           shoot 08-today-light today-light 25
+          shoot 08b-today-morning-light today-morning 25
+          shoot 08c-health-light health 30
+          shoot 08d-strain-light strain 30
+          shoot 08e-strain-river-light strain-river 30
+          shoot 08f-insights-light insights 25
           ls -la shots
           if [ -n "$FAIL" ]; then
             echo "::error::blank, crashed or unrendered screens:$FAIL"

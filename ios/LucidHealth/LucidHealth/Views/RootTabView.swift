@@ -1,7 +1,8 @@
 import SwiftUI
 
 // MARK: - RootTabView
-// Flat bottom tab bar; the wake screen after the smart alarm covers it full screen.
+// Four tabs on the V3 board: Today, Health, Strain, Insights. Food logging moved
+// behind the plus on Today. The wake screen after the smart alarm covers it all.
 
 struct RootTabView: View {
     @EnvironmentObject var bleManager: BLEManager
@@ -9,41 +10,41 @@ struct RootTabView: View {
     @State private var showWake = LucidScreen.current == .wake
     @State private var wakeFireDate: Date?
     @State private var showSettingsShot = false
+    @State private var showFoodShot = false
+    @State private var showWindDown = false
+    @StateObject private var modeStore = AppModeStore()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            // Living Aurora — shared canvas across all tabs (no reflow). Breathes +
-            // reacts to recovery + drifts with circadian phase.
-            AuroraBackground(recovery: bleManager.healthEngine.recoveryScore)
-                .ignoresSafeArea()
+            V3.bg.ignoresSafeArea()
 
-            // Tab content — opacity/zIndex swap, no NavigationStack rerender
+            // Tab content: opacity swap keeps each tab's scroll position and state.
             ZStack {
                 ForEach(AppTab.allCases, id: \.rawValue) { tab in
                     NavigationStack {
                         tabContent(tab)
+                            .toolbar(.hidden, for: .navigationBar)
                     }
                     .opacity(selectedTab == tab ? 1 : 0)
                     .allowsHitTesting(selectedTab == tab)
                 }
             }
-            .ignoresSafeArea()
-
-            // Content scrolls under a flat status-bar strip, never under the clock.
-            VStack(spacing: 0) {
-                Color.clear.frame(height: 0)
-                    .background(DS.Colors.ground.ignoresSafeArea(edges: .top))
-                Spacer(minLength: 0)
+            .fullScreenCover(isPresented: $showWindDown) {
+                WindDownV3View(bleManager: bleManager) { showWindDown = false }
+                    .environmentObject(bleManager)
             }
-            .allowsHitTesting(false)
 
-            // Floating pill tab bar at bottom
-            PillTabBar(selectedTab: $selectedTab)
+            V3TabBar(selected: $selectedTab)
+                .sheet(isPresented: $bleManager.showDoubleTapSheet) {
+                    QuickTagSheet(ble: bleManager)
+                        .environmentObject(bleManager)
+                }
         }
         .ignoresSafeArea(.keyboard)
         .environment(\.selectTab) { selectedTab = $0 }
         .fullScreenCover(isPresented: $showWake) {
-            WakeScreen(fireDate: wakeFireDate) { showWake = false }
+            WakeV3Screen(fireDate: wakeFireDate) { showWake = false }
                 .environmentObject(bleManager)
         }
         .sheet(isPresented: $showSettingsShot) {
@@ -51,10 +52,29 @@ struct RootTabView: View {
                 .environmentObject(bleManager)
                 .lucidRendered(.settings)
         }
+        .sheet(isPresented: $showFoodShot) {
+            NavigationStack { FoodView() }
+                .environmentObject(bleManager)
+        }
         .task {
-            guard LucidScreen.current == .settings else { return }
-            try? await Task.sleep(for: .seconds(1.5))
-            showSettingsShot = true
+            modeStore.start(engine: bleManager.healthEngine)
+            maybeShowWindDown(modeStore.current)
+            switch LucidScreen.current {
+            case .settings:
+                try? await Task.sleep(for: .seconds(1.5))
+                showSettingsShot = true
+            case .food:
+                try? await Task.sleep(for: .seconds(1.5))
+                showFoodShot = true
+            default:
+                break
+            }
+        }
+        .onChange(of: modeStore.current) { _, mode in
+            maybeShowWindDown(mode)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            bleManager.evt("app_state", "\(phase)")
         }
         .onReceive(bleManager.healthEngine.$smartAlarmTriggered) { fired in
             guard fired else { return }
@@ -69,20 +89,35 @@ struct RootTabView: View {
         }
     }
 
+    /// The wind-down takeover comes up at most once a night, when wind-down mode opens,
+    /// and sends the wind-down notification with tonight's plan note.
+    private func maybeShowWindDown(_ mode: AppMode) {
+        guard mode == .windDown, LucidScreen.current == nil, !showWake else { return }
+        let key = "lucid_winddown_shown_date"
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        let today = f.string(from: Date())
+        if UserDefaults.standard.string(forKey: key) == today { return }
+        UserDefaults.standard.set(today, forKey: key)
+        showWindDown = true
+        bleManager.sendWindDownNotification(note: bleManager.tonightPlanNote)
+    }
+
     @ViewBuilder
     private func tabContent(_ tab: AppTab) -> some View {
         switch tab {
         case .today:
-            TodayView()
+            TodayV3View()
                 .environmentObject(bleManager)
+                .lucidRendered(.offline)
         case .health:
-            HealthView()
+            HealthV3View()
                 .environmentObject(bleManager)
-        case .food:
-            FoodView()
+        case .strain:
+            StrainV3View()
                 .environmentObject(bleManager)
         case .insights:
-            InsightsView()
+            InsightsV3View()
                 .environmentObject(bleManager)
         }
     }

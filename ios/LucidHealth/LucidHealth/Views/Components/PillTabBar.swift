@@ -2,16 +2,16 @@ import SwiftUI
 
 /// Floating Aurora tab bar — 60pt, radius-26, icon-only, square accent
 /// indicator behind the active icon (per AURORA-DESIGN-SPEC §2).
-/// 4 tabs: Today / Health / Food / Insights.
+/// 4 tabs: Today / Health / Strain / Insights. Food logging lives behind the plus on Today.
 /// Settings is NOT a tab — accessed via SettingsGearButton sheet.
 enum AppTab: Int, CaseIterable {
-    case today, health, food, insights
+    case today, health, strain, insights
 
     var icon: String {
         switch self {
         case .today:    return "clock"
         case .health:   return "heart"
-        case .food:     return "fork.knife"
+        case .strain:   return "gauge.with.needle"
         case .insights: return "chart.xyaxis.line"
         }
     }
@@ -20,7 +20,7 @@ enum AppTab: Int, CaseIterable {
         switch self {
         case .today:    return "Today"
         case .health:   return "Health"
-        case .food:     return "Food"
+        case .strain:   return "Strain"
         case .insights: return "Insights"
         }
     }
