@@ -25,6 +25,10 @@ struct RootTabView: View {
                     NavigationStack {
                         tabContent(tab)
                             .toolbar(.hidden, for: .navigationBar)
+                            .safeAreaInset(edge: .top, spacing: 0) {
+                                // Opaque status-bar strip so scrolled cards never run under the clock.
+                                Color.clear.frame(height: 0).background(V3.bg, ignoresSafeAreaEdges: .top)
+                            }
                     }
                     .opacity(selectedTab == tab ? 1 : 0)
                     .allowsHitTesting(selectedTab == tab)

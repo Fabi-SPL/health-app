@@ -102,10 +102,12 @@ struct V3Ring: View {
                 Circle().stroke(V3.t3, style: StrokeStyle(lineWidth: 1.5, dash: [3, 4]))
             } else {
                 Circle().stroke(track ?? color.opacity(0.17), lineWidth: lineWidth)
-                Circle()
-                    .trim(from: 0, to: max(0.001, min(progress, 1)))
-                    .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
+                if progress > 0.005 {
+                    Circle()
+                        .trim(from: 0, to: min(progress, 1))
+                        .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
             }
         }
         .padding(lineWidth / 2)
@@ -321,7 +323,7 @@ struct V3Callout: View {
             Circle().fill(color).frame(width: 7, height: 7).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
             (Text(bold).font(V3Font.text(14, .semibold)).foregroundColor(V3.t1)
              + Text(rest.isEmpty ? "" : " " + rest).font(V3Font.text(14)).foregroundColor(V3.t2))
-                .multilineTextAlignment(.center)
+                .multilineTextAlignment(.leading)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 18)

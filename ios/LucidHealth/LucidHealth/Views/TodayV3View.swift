@@ -32,6 +32,8 @@ private struct TodayV3Screen: View {
     @State private var cut: SupabaseClient.CutStatus?
     @State private var tonight: TonightPlan?
     @State private var yesterdayStrain: Double?
+    @State private var dayBattery: [StrainBatteryPoint] = []
+    @State private var dayBatteryLive = false
     @State private var showLog = false
 
     private let tick = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -211,6 +213,11 @@ extension TodayV3Screen {
         }
         if let c = try? await SupabaseClient.shared.cutStatus() { cut = c }
         yesterdayStrain = await fetchYesterdayStrain()
+        let rhr: Double? = engine.baselineRHR > 30 ? engine.baselineRHR : nil
+        let day = await StrainDayAPI.loadDay(day: Calendar.current.startOfDay(for: Date()),
+                                             rhrFallback: rhr, monotonyFallback: nil, vo2Fallback: nil)
+        dayBattery = day.battery
+        dayBatteryLive = day.batteryLive
     }
 
     @MainActor
@@ -401,7 +408,7 @@ extension TodayV3Screen {
                     .tag(1)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            .frame(height: page == 0 ? 228 : 392)
+            .frame(height: page == 0 ? 254 : 392)
             .animation(.easeInOut(duration: 0.25), value: page)
             V3PageDots(count: 2, index: page)
         }
@@ -698,7 +705,7 @@ extension TodayV3Screen {
     var batteryPoints: [V3AreaChart.P] {
         var seen = Set<Double>()
         var out: [V3AreaChart.P] = []
-        for p in battery.sorted(by: { $0.at < $1.at }) {
+        for p in dayBattery.sorted(by: { $0.at < $1.at }) {
             let x: Double = V3Format.hourOfDay(p.at, relativeTo: now)
             if x < 0 || x > 24 { continue }
             if seen.insert(x).inserted { out.append(V3AreaChart.P(x: x, y: p.value)) }
@@ -707,9 +714,10 @@ extension TodayV3Screen {
     }
 
     var batteryRightText: String? {
-        let pts = battery.sorted(by: { $0.at < $1.at })
+        let pts = dayBattery.sorted(by: { $0.at < $1.at })
         guard let f = pts.first, let l = pts.last else { return nil }
-        var parts: [String] = ["\(zero(f.value)) at wake"]
+        var parts: [String] = dayBatteryLive ? [] : ["estimated"]
+        parts.append("\(zero(f.value)) at wake")
         let hrs: Double = l.at.timeIntervalSince(f.at) / 3600
         if hrs >= 1.5 && f.value > l.value {
             parts.append(V3Format.signed(-(f.value - l.value) / hrs, decimals: 1) + " an hour")
@@ -734,7 +742,7 @@ extension TodayV3Screen {
                 if batteryPoints.count < 2 {
                     V3EmptyLine(text: "Battery not synced yet")
                 } else {
-                    V3BigNumber(value: zero(engine.bodyBattery), unit: "/ 100")
+                    V3BigNumber(value: zero(dayBattery.max(by: { $0.at < $1.at })?.value ?? 0), unit: "/ 100")
                     batteryChart
                 }
             }

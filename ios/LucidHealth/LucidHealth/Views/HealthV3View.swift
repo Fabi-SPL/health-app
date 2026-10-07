@@ -1325,7 +1325,7 @@ private struct HealthStagesBlock: View {
         let remPct = pct(m.rem, of: asleep)
         let lightPct = pct(m.light, of: asleep)
         let times = segments.filter { $0.stage == "awake" }.count
-        let awakeNote = times > 0 ? "\(times) times" : "\(pct(m.awake, of: asleep + m.awake))%"
+        let awakeNote = times > 0 ? (times == 1 ? "1 time" : "\(times) times") : "\(pct(m.awake, of: asleep + m.awake))%"
         return HStack(alignment: .top, spacing: 8) {
             HealthLegendCell(dot: V3.deep, name: "Deep", value: V3Format.duration(minutes: m.deep),
                              note: "\(deepPct)%" + (deepPct < 13 ? " · low" : ""), noteColor: deepPct < 13 ? V3.amber : V3.green)
@@ -1389,7 +1389,7 @@ private struct HealthHRCurve: View {
             let lo = min(vmin, resting ?? vmin) - 4
             let hi = max(vmax, resting ?? vmax) + 4
             let top: CGFloat = 20
-            let bottom: CGFloat = 6
+            let bottom: CGFloat = 22
             let plotH = size.height - top - bottom
             func yOf(_ v: Double) -> CGFloat { top + plotH * CGFloat(1 - (v - lo) / (hi - lo)) }
             func xOf(_ i: Int) -> CGFloat { (CGFloat(i) + 0.5) / CGFloat(n) * size.width }
@@ -1427,7 +1427,7 @@ private struct HealthHRCurve: View {
             let when = start.addingTimeInterval(end.timeIntervalSince(start) * (Double(minIndex) + 0.5) / Double(n))
             let text = "\(Int(minValue.rounded())) bpm · " + V3Format.hhmm(when)
             let minTag = Text(text).font(V3Font.text(11, .semibold)).foregroundColor(V3.t1)
-            ctx.draw(minTag, at: CGPoint(x: min(max(dot.x, 50), size.width - 50), y: max(dot.y - 12, 8)), anchor: .center)
+            ctx.draw(minTag, at: CGPoint(x: min(max(dot.x, 50), size.width - 50), y: min(dot.y + 16, size.height - 7)), anchor: .center)
         }
     }
 }
