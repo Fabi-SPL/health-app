@@ -9,6 +9,7 @@ struct StrainV3View: View {
     @State private var selectedDay: Date = Calendar.current.startOfDay(for: Date())
     @State private var nameTarget: StrainDayBlock? = nil
     @State private var blockTarget: StrainDayBlock? = nil
+    @State private var autoOpened = false
     @State private var liveSession: SupabaseClient.WorkoutSession? = nil
     @State private var openSession: SupabaseClient.WorkoutSession? = nil
     @State private var workoutNote: String? = nil
@@ -41,11 +42,9 @@ struct StrainV3View: View {
         }
         .task(id: selectedDay) {
             await model.load(day: selectedDay, engine: bleManager.healthEngine)
-            if LucidScreen.current == .blockDetail, blockTarget == nil, let top = model.data?.topBlock {
-                try? await Task.sleep(for: .seconds(1))
-                blockTarget = top
-            }
+            autoOpenBlock()
         }
+        .onChange(of: model.data?.topBlock?.id) { _, _ in autoOpenBlock() }
         .task { await refreshWorkouts() }
         .onAppear {
             if LucidScreen.current == .strainRiver {
@@ -75,6 +74,15 @@ struct StrainV3View: View {
     }
 
     // MARK: Loading
+
+    private func autoOpenBlock() {
+        guard LucidScreen.current == .blockDetail, !autoOpened, let top = model.data?.topBlock else { return }
+        autoOpened = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            blockTarget = top
+        }
+    }
 
     private func reload() async {
         await model.load(day: selectedDay, engine: bleManager.healthEngine)
