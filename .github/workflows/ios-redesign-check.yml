@@ -22,6 +22,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Can this runner reach the server
+        env:
+          ANON: ${{ secrets.SUPABASE_ANON_KEY }}
+          BASE: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
+        run: |
+          echo "runner ip: $(curl -s -m 10 https://api.ipify.org || echo unknown)"
+          for path in /auth/v1/health /rest/v1/; do
+            curl -s -o /dev/null -m 15 -H "apikey: $ANON" -w "$path http=%{http_code} connect=%{time_connect}s total=%{time_total}s\n" "$BASE$path" || echo "$path FAILED (curl exit $?)"
+          done
+
       - name: Select latest Xcode
         run: |
           XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
