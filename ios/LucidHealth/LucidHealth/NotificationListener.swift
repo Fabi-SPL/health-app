@@ -196,6 +196,11 @@ class NotificationListener {
             if let sid = nudge.sessionId { info["session_id"] = sid }
             if let reason = nudge.reason { info["reason"] = reason }
             content.userInfo = info
+        } else if nudge.priority == "silent" {
+            // v115: the server marks night-time strap alerts silent; they used to play the Lucid sound anyway.
+            content.sound = nil
+            content.interruptionLevel = .passive
+            content.userInfo = ["nudge_id": nudge.id, "source": "lucid-bridge"]
         } else {
             content.sound = nudge.priority == "voice" ? .defaultCritical : Self.lucidSound()
             content.interruptionLevel = nudge.priority == "voice" ? .critical : .timeSensitive

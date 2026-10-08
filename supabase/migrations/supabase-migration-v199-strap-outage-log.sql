@@ -285,3 +285,282 @@ AS $function$
            WHERE user_id = p_user_id AND recorded_at >= p_since AND recorded_at < p_until) t
 $function$;
 GRANT EXECUTE ON FUNCTION public.minutes_with_realtime_data_packed(uuid, timestamptz, timestamptz) TO authenticated;
+
+-- Night strap alerts are silent (Fabi, 2026-10-08: silent at night, loud by day).
+CREATE OR REPLACE FUNCTION public.ble_freshness_check(p_threshold_min integer DEFAULT 10)
+ RETURNS void
+ LANGUAGE plpgsql
+ SET search_path TO 'public', 'extensions', 'pg_temp'
+AS $function$
+DECLARE
+  r record;
+  v_reason text;
+  v_hour int;
+  v_night boolean;
+  v_notify_after int;
+  v_sent_today int;
+  v_cap constant int := 3;
+  v_qid uuid;
+BEGIN
+  -- v199: 22:00-08:00 strap alerts are silent (Fabi, 2026-10-08: silent at night, loud by day).
+  v_hour  := extract(hour FROM (now() AT TIME ZONE 'Europe/Berlin'));
+  v_night := (v_hour >= 22 OR v_hour < 8);
+  v_notify_after := CASE WHEN v_night THEN 12 ELSE 30 END;
+
+  -- 1. Open a gap-episode when data goes stale. SILENT on purpose now — an
+  --    episode opening is a fact worth recording, not yet worth interrupting.
+  FOR r IN
+    SELECT c.user_id, c.device_id, c.minutes_since_last
+    FROM v_ble_sync_cursor c
+    LEFT JOIN ble_freshness_alerts a
+      ON a.user_id = c.user_id
+     AND a.device_id IS NOT DISTINCT FROM c.device_id
+     AND a.state = 'open'
+    WHERE c.minutes_since_last > p_threshold_min
+      AND a.id IS NULL
+  LOOP
+    SELECT substring(value from 'reason=([^.]*)') INTO v_reason
+    FROM bridge_logs
+    WHERE user_id = r.user_id AND category = 'evt_ble_disconnected'
+    ORDER BY created_at DESC LIMIT 1;
+
+    INSERT INTO ble_freshness_alerts (user_id, device_id, minutes_since_last, state, disconnect_reason)
+    VALUES (r.user_id, r.device_id, r.minutes_since_last, 'open', trim(v_reason));
+  END LOOP;
+
+  -- 2. Notify only once an episode has SURVIVED the notify window. A gap that
+  --    heals itself inside that window is never mentioned.
+  FOR r IN
+    SELECT a.id, a.user_id, a.disconnect_reason, c.minutes_since_last
+    FROM ble_freshness_alerts a
+    JOIN v_ble_sync_cursor c
+      ON c.user_id = a.user_id
+     AND a.device_id IS NOT DISTINCT FROM c.device_id
+    WHERE a.state = 'open'
+      AND a.notified_at IS NULL
+      AND a.detected_at < now() - make_interval(mins => v_notify_after)
+      AND c.minutes_since_last > p_threshold_min
+  LOOP
+    SELECT count(*) INTO v_sent_today
+      FROM notification_queue
+     WHERE user_id = r.user_id
+       AND title LIKE '%Whoop%'
+       AND scheduled_for >= date_trunc('day', now() AT TIME ZONE 'Europe/Berlin') AT TIME ZONE 'Europe/Berlin';
+
+    IF v_sent_today >= v_cap THEN
+      -- mark it handled anyway so it does not queue up behind the cap
+      UPDATE ble_freshness_alerts SET notified_at = now() WHERE id = r.id;
+      CONTINUE;
+    END IF;
+
+    INSERT INTO notification_queue (user_id, type, scheduled_for, title, body, priority)
+    VALUES (
+      r.user_id, 'cli', now(),
+      CASE WHEN v_night THEN '🌙 Whoop stream dead — sleep is not being recorded'
+           ELSE '📡 Whoop stream dead' END,
+      'No biometric data for ' || round(r.minutes_since_last) || ' min.'
+      || coalesce(E'\nLast disconnect: ' || r.disconnect_reason, '')
+      || CASE WHEN v_night
+              THEN E'\n\nEvery minute down is sleep data you do not get back. Reseat the strap and reopen LucidHealth.'
+              ELSE E'\n\nReopen LucidHealth and check the strap is seated.' END,
+      CASE WHEN v_night THEN 'high' ELSE 'normal' END
+    ) RETURNING id INTO v_qid;
+
+    -- 2026-09-11: notification_queue alone never reached the phone. 311 'cli' rows
+    -- in 14 days, 0 delivered — including every alert for the 40h outage that ate
+    -- the night of 09-10. The phone polls nudges, so write there too, same id so
+    -- drain_notification_queue's guard can't double-fire it.
+    INSERT INTO nudges (id, user_id, title, message, deliver_at, priority, channels, status, source, metadata)
+    SELECT q.id, q.user_id, q.title, q.body, now(),
+           CASE WHEN v_night THEN 'silent' WHEN q.priority = 'high' THEN 'voice' ELSE 'visual' END,
+           ARRAY['push'], 'pending', 'health',
+           jsonb_build_object('kind','ble_stream_dead','minutes_down',round(r.minutes_since_last))
+    FROM notification_queue q WHERE q.id = v_qid;
+
+    UPDATE ble_freshness_alerts SET notified_at = now() WHERE id = r.id;
+  END LOOP;
+
+  -- 3. One escalation if it is STILL dead 45 min after the first banner.
+  FOR r IN
+    SELECT a.id, a.user_id, c.minutes_since_last
+    FROM ble_freshness_alerts a
+    JOIN v_ble_sync_cursor c
+      ON c.user_id = a.user_id
+     AND a.device_id IS NOT DISTINCT FROM c.device_id
+    WHERE a.state = 'open'
+      AND a.notified_at IS NOT NULL
+      AND a.escalated_at IS NULL
+      AND a.notified_at < now() - interval '45 minutes'
+      AND c.minutes_since_last > p_threshold_min
+  LOOP
+    INSERT INTO notification_queue (user_id, type, scheduled_for, title, body, priority)
+    VALUES (
+      r.user_id, 'cli', now(),
+      '🚨 Whoop STILL down — ' || round(r.minutes_since_last) || ' min',
+      'The stream never came back after the first alert. This needs the strap on the charger for a hard power-cycle.',
+      'high'
+    ) RETURNING id INTO v_qid;
+
+    INSERT INTO nudges (id, user_id, title, message, deliver_at, priority, channels, status, source, metadata)
+    SELECT q.id, q.user_id, q.title, q.body, now(), CASE WHEN v_night THEN 'silent' ELSE 'voice' END,
+           ARRAY['push'], 'pending', 'health',
+           jsonb_build_object('kind','ble_stream_dead_escalation','minutes_down',round(r.minutes_since_last))
+    FROM notification_queue q WHERE q.id = v_qid;
+
+    UPDATE ble_freshness_alerts SET escalated_at = now() WHERE id = r.id;
+  END LOOP;
+
+  -- 4. Silent recovery close.
+  UPDATE ble_freshness_alerts a
+  SET state = 'recovered', recovered_at = NOW()
+  FROM v_ble_sync_cursor c
+  WHERE a.user_id = c.user_id
+    AND a.device_id IS NOT DISTINCT FROM c.device_id
+    AND a.state = 'open'
+    AND c.minutes_since_last <= 5;
+END $function$
+;
+
+-- A crash report sent on the next launch names the death even when its MetricKit window is wide.
+CREATE OR REPLACE FUNCTION public.classify_strap_gap(p_user_id uuid, p_from timestamp with time zone, p_to timestamp with time zone)
+ RETURNS TABLE(cause text, detail text, evidence jsonb)
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public', 'pg_temp'
+AS $function$
+DECLARE
+  t_end timestamptz := COALESCE(p_to, now());
+  gap_min numeric := extract(epoch from (COALESCE(p_to, now()) - p_from)) / 60;
+  n_hb int; n_sync int; n_conn int; n_hr0 int; n_hr int;
+  hb_b record; hb_a record;
+  disc_reason text; n_disc int;
+  crash_line text; prev_exit text;
+  chg boolean; fw_crash int;
+  c text; d text; extra text := ''; alive numeric; top int;
+  hm text := to_char(p_from AT TIME ZONE 'Europe/Berlin', 'HH24:MI');
+BEGIN
+  SELECT count(*),
+         count(*) FILTER (WHERE h.status LIKE 'Syncing%'),
+         count(*) FILTER (WHERE h.status LIKE 'Connecting%' OR h.status LIKE 'Scanning%'
+                             OR h.status LIKE 'Disconnected%' OR h.status LIKE 'Bluetooth%'),
+         count(*) FILTER (WHERE h.status IN ('Streaming', 'Connected') AND h.hr = 0),
+         count(*) FILTER (WHERE h.status IN ('Streaming', 'Connected') AND h.hr > 0)
+    INTO n_hb, n_sync, n_conn, n_hr0, n_hr
+    FROM app_heartbeats(p_user_id, p_from + interval '3 min', t_end) h;
+
+  SELECT * INTO hb_b FROM app_heartbeats(p_user_id, p_from - interval '30 min', p_from + interval '3 min') h
+   ORDER BY h.at DESC LIMIT 1;
+  IF p_to IS NOT NULL THEN
+    SELECT * INTO hb_a FROM app_heartbeats(p_user_id, p_to - interval '1 min', p_to + interval '20 min') h
+     ORDER BY h.at LIMIT 1;
+  END IF;
+
+  SELECT count(*), min(substring(b.value from 'reason=(.*?) code=') || ' (code ' || substring(b.value from 'code=([0-9]+)') || ')')
+    INTO n_disc, disc_reason
+    FROM bridge_logs b
+   WHERE b.user_id = p_user_id AND b.category = 'evt_ble_disconnected'
+     AND b.created_at BETWEEN p_from - interval '5 min' AND t_end;
+
+  -- crash reports arrive on the next launch; their own at= says when the process died
+  SELECT b.value INTO crash_line FROM bridge_logs b
+   WHERE b.user_id = p_user_id AND b.category = 'app_crash'
+     AND b.created_at >= p_from AND b.created_at < t_end + interval '2 hours'
+   -- a report whose own window covers the silence's start wins; any other report sent on the next
+   -- launch still names this death, because the app only reports past crashes when it starts again
+   ORDER BY (substring(b.value from 'at=([^ ]+)')::timestamptz <= p_from + interval '15 min'
+             AND substring(b.value from 'end=([^ ]+)')::timestamptz >= p_from - interval '3 min') IS TRUE DESC,
+            b.created_at LIMIT 1;
+  SELECT b.value INTO prev_exit FROM bridge_logs b
+   WHERE b.user_id = p_user_id AND b.category = 'app_prev_exit'
+     AND b.created_at >= p_from AND b.created_at < t_end + interval '30 min'
+   ORDER BY b.created_at LIMIT 1;
+
+  SELECT bool_or(w.event_type = 'charging_on'), count(*) FILTER (WHERE w.event_type = 'memfault_crash')
+    INTO chg, fw_crash
+    FROM whoop_events w
+   WHERE w.user_id = p_user_id AND w.event_type IN ('charging_on', 'memfault_crash')
+     AND w.recorded_at BETWEEN p_from - interval '5 min' AND t_end;
+
+  -- a running app uploads a heartbeat every ~2 min; a handful across a long silence means it was mostly dead
+  alive := n_hb / GREATEST(1, gap_min / 2);
+  top := GREATEST(n_sync, n_conn, n_hr0, n_hr);
+  IF n_hb > 0 AND alive < 0.25 THEN
+    extra := ' The app was only alive for about ' || (n_hb * 2) || ' min of it, and then it was mostly '
+             || CASE top WHEN n_sync THEN 'downloading old history (live HR off)' WHEN n_conn THEN 'reconnecting'
+                         WHEN n_hr0 THEN 'connected with no heart rate' ELSE 'streaming' END || '.';
+  END IF;
+
+  IF n_hb = 0 OR alive < 0.25 THEN
+    IF crash_line IS NOT NULL THEN
+      c := 'app_crashed';
+      d := 'LucidHealth crashed at ' || hm || ' (' || COALESCE(substring(crash_line from 'type=([^ ]+)'), 'crash')
+           || '). iOS does not restart a crashed app until you open it.';
+    ELSIF hb_a.up_min IS NOT NULL AND hb_a.up_min < gap_min - 5 AND n_hb = 0 THEN
+      c := 'app_killed';
+      d := 'The app stopped running at ' || hm || ' while ' || lower(COALESCE(hb_b.status, 'running'))
+           || ' and only started again when it was reopened. No crash report reached the server, so iOS ended it'
+           || ' (memory or watchdog) or it crashed before it could report.';
+    ELSIF hb_a.up_min IS NOT NULL AND n_hb = 0 THEN
+      c := 'app_suspended';
+      d := 'The app stayed alive but iOS gave it no time to run from ' || hm
+           || CASE WHEN n_disc > 0 THEN ', after the strap disconnected: ' || disc_reason ELSE '' END || '.';
+    ELSIF p_to IS NULL THEN
+      c := 'app_silent';
+      d := 'Nothing from the app since ' || hm || ': it is not running, or the phone is off or offline.';
+    ELSIF n_hb > 0 THEN
+      c := 'app_killed';
+      d := 'The app was mostly not running from ' || hm || ': iOS kept ending or suspending it.';
+    ELSE
+      c := 'app_killed';
+      d := 'The app sent nothing from ' || hm || ' until the strap data came back; no heartbeat afterwards to say more.';
+    END IF;
+  ELSIF n_sync = top THEN
+    c := 'history_blocking_live';
+    d := 'The app was downloading old strap history (' || n_sync || ' of ' || n_hb
+         || ' heartbeats said "Syncing history"), and live heart rate stays off until that download ends.';
+  ELSIF n_conn = top THEN
+    IF COALESCE(hb_b.strap_bat, 100) <= 3 THEN
+      c := 'strap_battery_empty';
+      d := 'The strap ran out of battery (' || hb_b.strap_bat || '% at ' || hm || ').';
+    ELSE
+      c := 'ble_disconnected';
+      d := 'The Bluetooth link to the strap was down from ' || hm || ' and the app kept trying to reconnect'
+           || CASE WHEN n_disc > 0 THEN ' (' || n_disc || ' drops; ' || disc_reason || ')' ELSE '' END
+           || '. Strap battery ' || COALESCE(hb_b.strap_bat::text || '%', 'unknown') || '.';
+    END IF;
+  ELSIF n_hr0 = top THEN
+    c := 'no_heart_rate';
+    d := 'The strap stayed connected but sent no heart rate: off the wrist, or the sensor stopped measuring.';
+  ELSIF n_hr = top AND n_hr > 0 THEN
+    c := 'upload_failed';
+    d := 'The app had heart rate but none of it reached the server (network or sign-in).';
+  ELSE
+    c := 'unknown';
+    d := 'The app was running but its heartbeats do not say why no data arrived.';
+  END IF;
+
+  IF chg THEN extra := extra || ' The strap reported charging.'; END IF;
+  IF fw_crash > 0 THEN extra := extra || ' The strap firmware logged a crash.'; END IF;
+  IF c = 'app_killed' AND hb_b.mem_mb IS NOT NULL THEN
+    extra := extra || ' App memory before: ' || hb_b.mem_mb || ' MB.';
+  END IF;
+  IF c IN ('app_killed', 'app_silent') AND hb_b.phone_bat IS NOT NULL AND hb_b.phone_bat <= 5 THEN
+    c := 'phone_battery_dead';
+    d := 'The phone was at ' || hb_b.phone_bat || '% at ' || hm || ' and most likely switched off.';
+  END IF;
+
+  cause := c;
+  detail := d || extra;
+  evidence := jsonb_strip_nulls(jsonb_build_object(
+    'heartbeats', n_hb, 'alive_share', round(alive, 2), 'syncing', n_sync, 'connecting', n_conn, 'hr_zero', n_hr0, 'hr_ok', n_hr,
+    'before', CASE WHEN hb_b.at IS NULL THEN NULL ELSE jsonb_build_object('at', hb_b.at, 'status', hb_b.status,
+               'hr', hb_b.hr, 'strap_bat', hb_b.strap_bat, 'asleep', hb_b.asleep, 'up_min', hb_b.up_min,
+               'phone_bat', hb_b.phone_bat, 'mem_mb', hb_b.mem_mb) END,
+    'after', CASE WHEN hb_a.at IS NULL THEN NULL ELSE jsonb_build_object('at', hb_a.at, 'status', hb_a.status,
+               'up_min', hb_a.up_min) END,
+    'disconnects', n_disc, 'disconnect_reason', disc_reason,
+    'crash', crash_line, 'prev_exit', prev_exit, 'strap_charging', chg, 'strap_fw_crash', fw_crash));
+  RETURN NEXT;
+END;
+$function$
+;
