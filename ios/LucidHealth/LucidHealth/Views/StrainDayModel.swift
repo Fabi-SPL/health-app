@@ -296,7 +296,10 @@ enum StrainDayAPI {
             URLQueryItem(name: "metric_date", value: "lte.\(keyB)"),
             URLQueryItem(name: "select", value: "metric_date,recovery_score,strain_physical,strain_stress,strain_autonomic,resting_hr,acwr,training_monotony,vo2max_estimate,sleep_start,sleep_end")
         ]
+        let tStart = Date()
+        func lap(_ what: String) { LucidScreen.trace("strain " + what + " at \(Int(Date().timeIntervalSince(tStart) * 1000)) ms") }
         let metricRows = await rows("health_metrics", metricItems)
+        lap("health_metrics")
         var rowA: [String: Any]? = nil
         var rowB: [String: Any]? = nil
         for r in metricRows {
@@ -334,7 +337,9 @@ enum StrainDayAPI {
         async let hrTask = fetchHR(uid: uid, from: hrFrom, to: fetchTo)
         async let actTask = fetchActivities(uid: uid, from: dayStart, to: fetchTo)
         let hrAll = await hrTask
+        lap("hr \(hrAll.count) points")
         let acts = await actTask
+        lap("activities \(acts.count)")
 
         var end: Date
         if isToday {
@@ -369,6 +374,7 @@ enum StrainDayAPI {
         var live = false
         if isToday {
             let series = await SupabaseClient.shared.fetchBodyBatterySeries()
+            lap("battery \(series.count) points")
             let inWindow = series.filter { $0.at >= wake && $0.at <= end }.sorted { $0.at < $1.at }
             let values = inWindow.map { $0.value }
             if inWindow.count >= 12,
@@ -727,7 +733,7 @@ final class StrainDayModel: ObservableObject {
         let vo2: Double? = engine.vo2maxEstimate > 0 ? engine.vo2maxEstimate : nil
         let t0 = Date()
         let result = await StrainDayAPI.loadDay(day: day, rhrFallback: rhr, monotonyFallback: mono, vo2Fallback: vo2)
-        print("[Strain] loadDay \(StrainParse.dayKey(day)) took \(Int(Date().timeIntervalSince(t0) * 1000)) ms, \(result.hr.count) hr points, \(result.blocks.count) blocks, cancelled=\(Task.isCancelled) stale=\(mine != generation)")
+        LucidScreen.trace("[Strain] loadDay \(StrainParse.dayKey(day)) took \(Int(Date().timeIntervalSince(t0) * 1000)) ms, \(result.hr.count) hr points, \(result.blocks.count) blocks, cancelled=\(Task.isCancelled) stale=\(mine != generation)")
         if Task.isCancelled || mine != generation { return }
         data = result
         loading = false

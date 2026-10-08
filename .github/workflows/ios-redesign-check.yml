@@ -105,7 +105,7 @@ jobs:
             rm -f "$DATA/Documents/lucid-screen-$ARG.ok"
             xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
             sleep 1
-            SIMCTL_CHILD_TZ=Europe/Berlin xcrun simctl launch --stdout="$PWD/applogs/$NAME.log" --stderr="$PWD/applogs/$NAME.log" "$UDID" "$BUNDLE" -LucidScreen "$ARG" >/dev/null
+            SIMCTL_CHILD_TZ=Europe/Berlin SIMCTL_CHILD_NSUnbufferedIO=YES xcrun simctl launch --stdout="$PWD/applogs/$NAME.log" --stderr="$PWD/applogs/$NAME.log" "$UDID" "$BUNDLE" -LucidScreen "$ARG" >/dev/null
             sleep "$WAIT"
             xcrun simctl io "$UDID" screenshot "shots/$NAME.png" >/dev/null 2>&1
             SIZE=$(stat -f%z "shots/$NAME.png")
@@ -117,7 +117,7 @@ jobs:
               echo "--- $NAME app output (last 40 lines) ---"
               tail -40 "applogs/$NAME.log" 2>/dev/null || true
             fi
-            grep -h "\[Strain\]\|\[Food\]" "applogs/$NAME.log" 2>/dev/null | tail -5 || true
+            grep -h "\[Screen\]" "applogs/$NAME.log" 2>/dev/null | tail -25 || true
           }
           xcrun simctl ui "$UDID" appearance dark
           shoot 01-today today 25

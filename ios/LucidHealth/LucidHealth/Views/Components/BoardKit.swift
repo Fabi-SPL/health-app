@@ -40,9 +40,40 @@ enum LucidScreen: String {
         guard current != nil, !guardInstalled else { return }
         guardInstalled = true
         URLProtocol.registerClass(LucidReadOnlyGuard.self)
+        startStallProbe()
         #endif
     }
     private static var guardInstalled = false
+
+    /// Screenshot runs only: prints one line, so CI can see where a screen stalls.
+    static func trace(_ msg: String) {
+        #if DEBUG
+        guard current != nil else { return }
+        print("[Screen] " + msg)
+        fflush(stdout)
+        #endif
+    }
+
+    /// Screenshot runs only: a background thread times a main-queue round trip every half second and
+    /// prints any that take over 1.5 s, so a blocked main thread shows up in the CI log.
+    private static func startStallProbe() {
+        #if DEBUG
+        Thread.detachNewThread {
+            let start = Date()
+            while true {
+                let sent = Date()
+                let done = DispatchSemaphore(value: 0)
+                DispatchQueue.main.async { done.signal() }
+                if done.wait(timeout: .now() + 1.5) == .timedOut {
+                    done.wait()
+                    let ms = Int(Date().timeIntervalSince(sent) * 1000)
+                    trace("main thread blocked \(ms) ms at t+\(Int(sent.timeIntervalSince(start)))s")
+                }
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+        }
+        #endif
+    }
 
     static func markRendered(_ screens: [LucidScreen]) {
         #if DEBUG

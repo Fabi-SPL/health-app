@@ -48,12 +48,12 @@ struct FoodV3Sheet: View {
         async let compResult = FoodV3Net.bodyComp()
         let t0 = Date()
         if let list = await entriesResult { all = list.sorted { $0.capturedAt > $1.capturedAt } }
-        print("[Food] entries \(all.count) after \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
+        LucidScreen.trace("[Food] entries \(all.count) after \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
         if let c = await cutResult { cut = c }
         weights = await weightResult
         comp = await compResult
         loaded = true
-        print("[Food] sheet loaded after \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
+        LucidScreen.trace("[Food] sheet loaded after \(Int(Date().timeIntervalSince(t0) * 1000)) ms")
         if LucidScreen.current == .mealDetail {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             selected = all.first
