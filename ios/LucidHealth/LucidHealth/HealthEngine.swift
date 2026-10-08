@@ -168,6 +168,7 @@ class HealthEngine: ObservableObject {
     // MARK: - Sleep State (used by SleepEngine)
     var hrHistory: [Int] = []
     var recentHR: [Double] = []
+    var recentHRForUI: [Double] = []   // main thread only, mirrored from recentHR
     var recentHRV: [Double] = []
     /// Minimum HR seen while in a non-awake sleep stage. Set by SleepEngine, reset at sleep start.
     /// Used as the authoritative resting HR in upsertDailyMetrics after wake-up.

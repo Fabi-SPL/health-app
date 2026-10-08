@@ -150,10 +150,14 @@ extension HealthEngine {
         let today = Calendar.current.startOfDay(for: Date())
         if lastStrainReset == nil || !Calendar.current.isDate(lastStrainReset!, inSameDayAs: today) {
             strainAccumulator = 0
-            zoneMinutes = [0, 0, 0, 0, 0]
             hrZoneReadingCount = 0
             lastStrainReset = today
-            DispatchQueue.main.async { self.edwardsTRIMP = 0 }
+            // v115: zoneMinutes is @Published and watched by Today. This ran on the Bluetooth queue at the
+            // first reading of each day (00:00:00 on 10-08, when the app died), racing the main thread.
+            DispatchQueue.main.async {
+                self.zoneMinutes = [0, 0, 0, 0, 0]
+                self.edwardsTRIMP = 0
+            }
         }
 
         let zone = hrZone(for: Double(hr))

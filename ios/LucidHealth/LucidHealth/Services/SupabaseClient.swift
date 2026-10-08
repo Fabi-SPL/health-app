@@ -152,8 +152,19 @@ class SupabaseClient {
     let anonKey = ProcessInfo.processInfo.environment["LUCID_SUPABASE_ANON_KEY"] ?? Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as? String ?? "BUILD_ANON_KEY"
     let userId = ProcessInfo.processInfo.environment["LUCID_USER_ID"] ?? Bundle.main.object(forInfoDictionaryKey: "HERMES_USER_ID") as? String ?? "BUILD_USER_ID"
 
-    internal var accessToken: String?
-    private var tokenExpiry: Date?
+    // v115: every request reads the token while a login or a 401 can rewrite it from another task.
+    // An unguarded String written and read from two threads is a crash, so both sit behind a lock.
+    private let tokenLock = NSLock()
+    private var storedAccessToken: String?
+    private var storedTokenExpiry: Date?
+    internal var accessToken: String? {
+        get { tokenLock.lock(); defer { tokenLock.unlock() }; return storedAccessToken }
+        set { tokenLock.lock(); storedAccessToken = newValue; tokenLock.unlock() }
+    }
+    private var tokenExpiry: Date? {
+        get { tokenLock.lock(); defer { tokenLock.unlock() }; return storedTokenExpiry }
+        set { tokenLock.lock(); storedTokenExpiry = newValue; tokenLock.unlock() }
+    }
     // v110 — why the last login failed, so the account card can say "can't reach server" instead of "signed out".
     private(set) var lastAuthError: String?
     private let session = URLSession.shared
@@ -612,7 +623,7 @@ class SupabaseClient {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue(anonKey, forHTTPHeaderField: "apikey")
                 request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
-                request.setValue("Bearer \(accessToken!)", forHTTPHeaderField: "Authorization")
+                request.setValue("Bearer \(accessToken ?? "")", forHTTPHeaderField: "Authorization")
 
                 // Side-channel experimental metrics ONLY. NEVER write:
                 // recovery_score, sleep_score, sleep_hours, deep/rem/light/awake_min,
@@ -1357,7 +1368,7 @@ class SupabaseClient {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
                 request.setValue(anonKey, forHTTPHeaderField: "apikey")
-                request.setValue("Bearer \(accessToken!)", forHTTPHeaderField: "Authorization")
+                request.setValue("Bearer \(accessToken ?? "")", forHTTPHeaderField: "Authorization")
                 request.httpBody = try JSONSerialization.data(withJSONObject: row)
 
                 let (_, response) = try await URLSession.shared.data(for: request)
@@ -1388,7 +1399,7 @@ class SupabaseClient {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
                 request.setValue(anonKey, forHTTPHeaderField: "apikey")
-                request.setValue("Bearer \(accessToken!)", forHTTPHeaderField: "Authorization")
+                request.setValue("Bearer \(accessToken ?? "")", forHTTPHeaderField: "Authorization")
 
                 let formatter = ISO8601DateFormatter()
                 formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1504,7 +1515,7 @@ class SupabaseClient {
                     request.timeoutInterval = 30
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue(anonKey, forHTTPHeaderField: "apikey")
-                    request.setValue("Bearer \(accessToken!)", forHTTPHeaderField: "Authorization")
+                    request.setValue("Bearer \(accessToken ?? "")", forHTTPHeaderField: "Authorization")
                     request.httpBody = try JSONSerialization.data(withJSONObject: rows)
 
                     do {
@@ -1567,6 +1578,28 @@ class SupabaseClient {
     //      timestamps (not distributed across a synthetic gap). source =
     //      'whoop_ble_backfill' so we can distinguish from regular history sync.
 
+    /// v115: the server's explanation of the last strap silence (strap_outage_latest), as one line.
+    func fetchStrapOutageLine() async -> String? {
+        do {
+            try await ensureAuth()
+            guard let token = accessToken else { return nil }
+            let url = URL(string: "\(baseURL)/rest/v1/rpc/strap_outage_latest")!
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue(anonKey, forHTTPHeaderField: "apikey")
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.httpBody = try JSONSerialization.data(withJSONObject: ["p_user_id": userId, "p_min_minutes": 30] as [String: Any])
+            let (data, resp) = try await session.data(for: req)
+            guard ((resp as? HTTPURLResponse)?.statusCode ?? 0) < 300,
+                  let obj = (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])) as? [String: Any]
+            else { return nil }
+            return obj["line"] as? String
+        } catch {
+            return nil
+        }
+    }
+
     /// Returns set of unix-second-epochs of minutes that already have realtime_health
     /// rows in the window. iOS converts to a Set<Int> for O(1) lookup during dedup.
     func fetchMinutesWithData(since: Date, until: Date) async -> Set<Int> {
@@ -1580,6 +1613,19 @@ class SupabaseClient {
                 "p_since":   isoFmt.string(from: since),
                 "p_until":   isoFmt.string(from: until),
             ]
+            // v115: one JSON array first. The TABLE form below is cut at PostgREST's 1000-row cap however
+            // wide the Range header is (every sync logged minutes_with_data=1000).
+            var packed = URLRequest(url: URL(string: "\(baseURL)/rest/v1/rpc/minutes_with_realtime_data_packed")!)
+            packed.httpMethod = "POST"
+            packed.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            packed.setValue(anonKey, forHTTPHeaderField: "apikey")
+            packed.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            packed.httpBody = try JSONSerialization.data(withJSONObject: body)
+            if let reply = try? await session.data(for: packed),
+               ((reply.1 as? HTTPURLResponse)?.statusCode ?? 0) < 300,
+               let minutes = (try? JSONSerialization.jsonObject(with: reply.0)) as? [NSNumber] {
+                return Set(minutes.map { $0.intValue })
+            }
             let url = URL(string: "\(baseURL)/rest/v1/rpc/minutes_with_realtime_data")!
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
@@ -2058,7 +2104,7 @@ class SupabaseClient {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
                 request.setValue(anonKey, forHTTPHeaderField: "apikey")
-                request.setValue("Bearer \(accessToken!)", forHTTPHeaderField: "Authorization")
+                request.setValue("Bearer \(accessToken ?? "")", forHTTPHeaderField: "Authorization")
 
                 let body: [String: Any] = [
                     "user_id": userId,
@@ -2100,7 +2146,7 @@ class SupabaseClient {
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue(anonKey, forHTTPHeaderField: "apikey")
-                request.setValue("Bearer \(accessToken!)", forHTTPHeaderField: "Authorization")
+                request.setValue("Bearer \(accessToken ?? "")", forHTTPHeaderField: "Authorization")
                 request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
 
                 let fmt = ISO8601DateFormatter()
@@ -2754,7 +2800,7 @@ class SupabaseClient {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
                 request.setValue(anonKey, forHTTPHeaderField: "apikey")
-                request.setValue("Bearer \(accessToken!)", forHTTPHeaderField: "Authorization")
+                request.setValue("Bearer \(accessToken ?? "")", forHTTPHeaderField: "Authorization")
 
                 let fmt = ISO8601DateFormatter()
                 fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

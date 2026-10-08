@@ -23,6 +23,9 @@ extension HealthEngine {
 
         recentHR.append(Double(hr))
         if recentHR.count > 30 { recentHR.removeFirst() }
+        // v115: views read the main-thread copy; recentHR itself is written on the Bluetooth queue.
+        let snapshot = recentHR
+        DispatchQueue.main.async { self.recentHRForUI = snapshot }
 
         hrHistory.append(hr)
         if hrHistory.count > 60 { hrHistory.removeFirst() }

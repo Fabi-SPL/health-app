@@ -1120,7 +1120,7 @@ struct BoardTodayTop: View {
 
     private var heartRateCard: some View {
         let live = !strapDown && bleManager.heartRate > 0
-        let bars = Array(engine.recentHR.suffix(28))
+        let bars = Array(engine.recentHRForUI.suffix(28))
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Heart rate").font(.system(size: 15)).foregroundStyle(DS.Colors.secondaryLabel)

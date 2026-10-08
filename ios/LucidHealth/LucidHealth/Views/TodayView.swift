@@ -1155,7 +1155,7 @@ private struct WindDownCoachCard: View {
 
     private func load() async {
         let r = await SupabaseClient.shared.fetchSleepReadiness()
-        let hr = await MainActor.run { Array(bleManager.healthEngine.recentHR.suffix(60)) }
+        let hr = await MainActor.run { Array(bleManager.healthEngine.recentHRForUI.suffix(60)) }
         await MainActor.run {
             self.sri = r
             self.hrSeries = hr

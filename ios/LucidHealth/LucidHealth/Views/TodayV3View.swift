@@ -1237,7 +1237,7 @@ extension TodayV3Screen {
 
 extension TodayV3Screen {
     var descentValues: [Double] {
-        let raw: [Double] = engine.recentHR.suffix(60).filter { $0 > 30 && $0 < 220 }
+        let raw: [Double] = engine.recentHRForUI.suffix(60).filter { $0 > 30 && $0 < 220 }
         if raw.count < 12 { return [] }
         var out: [Double] = []
         var i = 0

@@ -6,6 +6,7 @@ import UserNotifications
 import ActivityKit
 import WidgetKit
 import UIKit
+import MetricKit
 
 enum ConnectionState: String {
     case disconnected = "Disconnected"
@@ -104,6 +105,40 @@ class BLEManager: NSObject, ObservableObject {
     // MARK: - Debug Log (visible on screen)
     @Published var debugLog: [String] = []
     private let maxLogLines = 200
+    // v115: lines wait here and reach debugLog at most once a second. One @Published write per line
+    // re-rendered every observing view for every line (hundreds a second during a history download).
+    private var uiLogPending: [String] = []          // main only
+    private var uiLogFlushScheduled = false           // main only
+    private var pendingTypeCounts: [Int: Int] = [:]   // bleQueue only
+    private var typeCountsFlushScheduled = false      // bleQueue only
+    private var stdHRSeen = false                     // bleQueue only
+    private var phoneBatteryPct = -1
+    private var lastTailWrite = Date.distantPast      // logQueue only
+    private static let logTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+    // v115: the unsent console tail is mirrored to disk every 5 s, so the last minutes before a crash
+    // or an iOS kill reach the server on the next launch instead of dying with the process.
+    private static let logTailURL: URL = {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("log_tail.txt")
+    }()
+    private static let aliveMarkerKey = "app_alive_marker"
+
+    /// Physical memory footprint in MB, the number iOS compares against its kill limits.
+    static func memoryFootprintMB() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? Int(info.phys_footprint / 1_048_576) : -1
+    }
     private let appLaunchTime = Date()
     var sessionUptimeText: String {
         let s = Int(Date().timeIntervalSince(appLaunchTime))
@@ -152,6 +187,10 @@ class BLEManager: NSObject, ObservableObject {
     var rawCaptureEnabled: Bool {
         UserDefaults.standard.object(forKey: "raw_imu_capture_enabled") as? Bool ?? false
     }
+    /// v115: how far back a history record may be and still be stored. Was 96 h, but the strap is trimmed
+    /// before this filter runs, so a backlog older than the window was downloaded, trimmed and thrown away
+    /// (3,024 records on 10-04 alone). Two weeks covers any backlog the strap can hold.
+    let historyAcceptDepth: TimeInterval = 14 * 86_400
     /// History records the strap has already trimmed but the server has not confirmed yet.
     private var carriedHistory: [HRReading] = []
     private var pendingHistoryGen = 0
@@ -169,14 +208,14 @@ class BLEManager: NSObject, ObservableObject {
         try? data.write(to: pendingHistoryURL, options: .atomic)
     }
 
-    /// Anything older than the finalizer's 96 h accept window is dropped here, so carried records can never
+    /// Anything older than the finalizer's accept window is dropped here, so carried records can never
     /// read as a stuck cursor and trip autoEraseStuckHistory.
     private func loadPendingHistory() -> [HRReading] {
         guard let data = try? Data(contentsOf: pendingHistoryURL),
               let recs = try? JSONDecoder().decode([HRReading].self, from: data) else { return [] }
-        let floor = UInt32(max(0, Date().addingTimeInterval(-95 * 3600).timeIntervalSince1970))
+        let floor = UInt32(max(0, Date().addingTimeInterval(-(historyAcceptDepth - 3600)).timeIntervalSince1970))
         let fresh = recs.filter { $0.timestamp >= floor }
-        if !fresh.isEmpty {
+        if !recs.isEmpty {
             supabase.pushDebugLog(key: "history_pending_carried", value: "records=\(fresh.count) dropped_stale=\(recs.count - fresh.count)")
         }
         return fresh
@@ -416,9 +455,13 @@ class BLEManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
+        let previousTail = (try? String(contentsOf: Self.logTailURL, encoding: .utf8)) ?? ""
+        try? FileManager.default.removeItem(at: Self.logTailURL)
+        let previousAlive = UserDefaults.standard.string(forKey: Self.aliveMarkerKey)
         supabase.onLog = { [weak self] msg in
             self?.log(msg)
         }
+        reportPreviousRun(tail: previousTail, alive: previousAlive)
 
         // Wire activity detector
         activityDetector.bleManager = self
@@ -724,16 +767,60 @@ class BLEManager: NSObject, ObservableObject {
     // MARK: - Debug Logging
 
     func log(_ msg: String) {
-        let ts = DateFormatter()
-        ts.dateFormat = "HH:mm:ss"
-        let line = "[\(ts.string(from: Date()))] \(msg)"
+        let line = "[\(Self.logTimeFormatter.string(from: Date()))] \(msg)"
         print(line)
-        logQueue.async { self.logPushBuffer.append(line) }
-        DispatchQueue.main.async {
-            self.debugLog.append(line)
-            if self.debugLog.count > self.maxLogLines {
-                self.debugLog.removeFirst()
+        logQueue.async {
+            self.logPushBuffer.append(line)
+            let now = Date()
+            if now.timeIntervalSince(self.lastTailWrite) >= 5 {
+                self.lastTailWrite = now
+                self.persistLogTail(now)
             }
+        }
+        DispatchQueue.main.async {
+            self.uiLogPending.append(line)
+            guard !self.uiLogFlushScheduled else { return }
+            self.uiLogFlushScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                self.uiLogFlushScheduled = false
+                var next = self.debugLog + self.uiLogPending
+                self.uiLogPending.removeAll()
+                if next.count > self.maxLogLines { next.removeFirst(next.count - self.maxLogLines) }
+                self.debugLog = next
+            }
+        }
+    }
+
+    /// logQueue only. The unsent lines plus a one-line "last seen alive" marker for the next launch.
+    private func persistLogTail(_ now: Date) {
+        let text = logPushBuffer.suffix(400).joined(separator: "\n")
+        try? text.data(using: .utf8)?.write(to: Self.logTailURL, options: .atomic)
+        let iso = ISO8601DateFormatter().string(from: now)
+        UserDefaults.standard.set("\(iso) state=\(connectionState.rawValue) hr=\(heartRate) mem=\(Self.memoryFootprintMB())MB up=\(sessionUptimeText)",
+                                  forKey: Self.aliveMarkerKey)
+    }
+
+    /// v115: the previous process's unsent tail and its last-alive marker, crash reports via MetricKit,
+    /// and the phone battery for the heartbeat.
+    private func reportPreviousRun(tail: String, alive: String?) {
+        if !tail.isEmpty {
+            let lines = ["⚰️ Unsent tail of the previous run, saved before it ended:"]
+                + tail.split(separator: "\n").map(String.init)
+            supabase.pushAppLog(lines: lines, sessionId: "prev-" + String(sessionId))
+        }
+        if let alive {
+            supabase.pushDebugLog(key: "app_prev_exit", value: "last_alive=\(alive)")
+        }
+        StrapWatchdog.shared.supabase = supabase
+        AppDiagnostics.shared.start(self)
+        DispatchQueue.main.async {
+            UIDevice.current.isBatteryMonitoringEnabled = true
+            self.phoneBatteryPct = Int((UIDevice.current.batteryLevel * 100).rounded())
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIDevice.batteryLevelDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.phoneBatteryPct = Int((UIDevice.current.batteryLevel * 100).rounded())
         }
     }
 
@@ -772,7 +859,11 @@ class BLEManager: NSObject, ObservableObject {
             let bat = Int(self.battery)
             let sleep = self.healthEngine.sleepDetected
             let uptime = self.sessionUptimeText
-            self.log("💓 Heartbeat: \(conn) HR=\(hr) bat=\(bat)% sleep=\(sleep) up=\(uptime)")
+            let phone = self.phoneBatteryPct
+            let mem = Self.memoryFootprintMB()
+            let thermal = ProcessInfo.processInfo.thermalState.rawValue
+            let lpm = ProcessInfo.processInfo.isLowPowerModeEnabled ? 1 : 0
+            self.log("💓 Heartbeat: \(conn) HR=\(hr) bat=\(bat)% sleep=\(sleep) up=\(uptime) phone=\(phone)% mem=\(mem)MB thermal=\(thermal) lpm=\(lpm)")
             self.flushRemoteLogs()
         }
         timer.resume()
@@ -785,6 +876,7 @@ class BLEManager: NSObject, ObservableObject {
             guard !logPushBuffer.isEmpty else { return }
             let batch = logPushBuffer
             logPushBuffer.removeAll()
+            try? FileManager.default.removeItem(at: Self.logTailURL)
             supabase.pushAppLog(lines: batch, sessionId: String(sessionId))
         }
     }
@@ -1568,6 +1660,8 @@ class BLEManager: NSObject, ObservableObject {
         log("Gap: \(gapMinutes) min (\(gapStartTime) → \(gapEndTime))")
 
         isDownloadingHistory = true
+        stdHRSeen = false
+        StrapWatchdog.shared.note("Then the app started downloading strap history, which pauses live heart rate.")
         DispatchQueue.main.async { self.isHistorySyncing = true }
         historyBuffer.removeAll()
         carriedHistory = loadPendingHistory()
@@ -1589,7 +1683,7 @@ class BLEManager: NSObject, ObservableObject {
             // the gap window. A dedup set narrower than the accept window would let
             // already-stored minutes re-upload as duplicates.
             let existing = await self.supabase.fetchMinutesWithData(
-                since: Date().addingTimeInterval(-96 * 3600),
+                since: Date().addingTimeInterval(-self.historyAcceptDepth),
                 until: self.gapEndTime
             )
             self.manualBackfillExistingMinutes = existing
@@ -1685,7 +1779,7 @@ class BLEManager: NSObject, ObservableObject {
             // 100% of records by construction — 756 syncs since 2026-05-07 produced
             // 5 uploads. gapStartTime still decides WHETHER to sync; it must never
             // filter records. Novelty is the dedup set's job, and that is idempotent.
-            let acceptDepth: TimeInterval = 96 * 3600
+            let acceptDepth = self.historyAcceptDepth
             let minUnix = Int(Date().addingTimeInterval(-acceptDepth).timeIntervalSince1970)
             let maxUnix = nowUnix + 60
             let gapDesc = "gap=[\(Int(windowStart.timeIntervalSince1970))..\(Int(windowEnd.timeIntervalSince1970))]"
@@ -1950,7 +2044,24 @@ class BLEManager: NSObject, ObservableObject {
             // aborted instead (CMD 20, read-only), so nothing can be thrown away
             // that we never got.
             let deliveredThisBatch = historyBuffer.count - historyBatchStartTotal
-            if deliveredThisBatch == 0 && historyBuffer.isEmpty {
+            // v115: the strap re-serves the same empty batch until it is acked. Since 10-06 21:10 every
+            // sync aborted at trim 22672, so no night after that could ever backfill. Three empty aborts
+            // at one trim value mean the batch holds nothing the parser can read; ack it once to move on.
+            let emptyTrim = (trim10 ?? trim8).map { Int($0) }
+            let ud = UserDefaults.standard
+            let sameEmptyTrim = emptyTrim != nil && (ud.object(forKey: "history_empty_abort_trim") as? Int) == emptyTrim
+            let emptyAborts = sameEmptyTrim ? ud.integer(forKey: "history_empty_abort_count") + 1 : 1
+            if deliveredThisBatch == 0 && historyBuffer.isEmpty, let wedged = trim10 ?? trim8, emptyAborts >= 3 {
+                log("History batch \(historyBatchCount) EMPTY at trim \(wedged) for the \(emptyAborts)th time — acking to unwedge")
+                supabase.pushDebugLog(key: "history_unwedge_ack", value: "trigger=\(trigger) batch=\(historyBatchCount) trim=\(wedged) empty_aborts=\(emptyAborts)")
+                ud.removeObject(forKey: "history_empty_abort_trim")
+                ud.removeObject(forKey: "history_empty_abort_count")
+                if let p = peripheral, let c = cmdToStrap {
+                    p.writeValue(WhoopProtocol.historyAckPacket(trim: wedged), for: c, type: .withResponse)
+                }
+            } else if deliveredThisBatch == 0 && historyBuffer.isEmpty {
+                ud.set(emptyTrim, forKey: "history_empty_abort_trim")
+                ud.set(emptyAborts, forKey: "history_empty_abort_count")
                 log("History batch \(historyBatchCount) ended EMPTY — aborting instead of trimming")
                 supabase.pushDebugLog(key: "history_sync_batch_empty_abort", value: "trigger=\(trigger) batch=\(historyBatchCount) would_have_trimmed=\(trim10 ?? trim8 ?? 0)")
                 if let p = peripheral, let c = cmdToStrap {
@@ -1961,6 +2072,7 @@ class BLEManager: NSObject, ObservableObject {
             } else if let trim = trim10 ?? trim8 {
                 log("History batch \(historyBatchCount) ended (trim10=\(t10str) trim8=\(t8str)), ACKing with \(trim)...")
                 supabase.pushDebugLog(key: "history_sync_batch_end", value: "trigger=\(trigger) batch=\(historyBatchCount) ack_trim=\(trim) delivered=\(deliveredThisBatch) running_total=\(historyBuffer.count)")
+                ud.removeObject(forKey: "history_empty_abort_count")
                 savePendingHistory(carriedHistory + historyBuffer)
                 if let p = peripheral, let c = cmdToStrap {
                     p.writeValue(WhoopProtocol.historyAckPacket(trim: trim), for: c, type: .withResponse)
@@ -2432,6 +2544,7 @@ extension BLEManager: CBCentralManagerDelegate {
 
         case .poweredOff:
             log("Bluetooth OFF")
+            StrapWatchdog.shared.note("Then Bluetooth was switched off on the phone.")
             DispatchQueue.main.async { self.connectionState = .disconnected }
         case .unauthorized:
             log("Bluetooth UNAUTHORIZED - check Settings > Lucid Bridge > Bluetooth")
@@ -2551,6 +2664,7 @@ extension BLEManager: CBCentralManagerDelegate {
         log("   State at disconnect: HR=\(heartRate) battery=\(Int(battery))% sleep=\(healthEngine.sleepDetected) readings=\(readingsToday)")
         log("   Session uptime: \(sessionUptimeText)")
         evt("ble_disconnected", "reason=\(reason) code=\(errorCode) hr=\(heartRate) batt=\(Int(battery))% sleep=\(healthEngine.sleepDetected) uptime=\(sessionUptimeText)")
+        StrapWatchdog.shared.note("Then the Bluetooth link dropped (\(reason), code \(errorCode)) and the app kept trying to reconnect. Strap battery \(Int(battery))%.")
 
         // v104 — drop any partially received frame. See didConnect.
         rxAssembly.removeAll()
@@ -2819,12 +2933,49 @@ extension BLEManager: CBPeripheralDelegate {
         }
     }
 
+    /// v115: the standard Heart Rate characteristic (0x2A37). The strap exposes it and the app subscribes,
+    /// but the frame assembler threw its bytes away. While a history download has the WHOOP realtime
+    /// stream off it is the only live heart rate, so it is stored; outside downloads it is only logged once.
+    private func handleStandardHR(_ d: Data) {
+        let s = d.startIndex
+        guard d.count >= 2 else { return }
+        let flags = d[s]
+        let wide = flags & 0x01 != 0
+        guard d.count >= (wide ? 3 : 2) else { return }
+        let bpm = wide ? Int(d[s + 1]) | (Int(d[s + 2]) << 8) : Int(d[s + 1])
+        var idx = s + (wide ? 3 : 2)
+        if flags & 0x08 != 0 { idx += 2 }
+        var rr: [UInt16] = []
+        if flags & 0x10 != 0 {
+            while idx + 1 < d.endIndex {
+                let raw1024 = UInt16(d[idx]) | (UInt16(d[idx + 1]) << 8)
+                rr.append(UInt16((Double(raw1024) * 1000.0 / 1024.0).rounded()))
+                idx += 2
+            }
+        }
+        if !stdHRSeen {
+            stdHRSeen = true
+            supabase.pushWhoopEvent(type: "std_hr_seen",
+                                    data: ["bpm": "\(bpm)", "rr": "\(rr.count)", "during_history": "\(isDownloadingHistory)"])
+        }
+        guard isDownloadingHistory, (25...220).contains(bpm) else { return }
+        StrapWatchdog.shared.fed()
+        DispatchQueue.main.async { self.heartRate = bpm }
+        pendingReadings.append(HRReading(timestamp: UInt32(Date().timeIntervalSince1970),
+                                         heartRate: UInt8(bpm), rrIntervals: rr))
+    }
+
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         if let err = error {
             log("Read ERROR on \(characteristic.uuid.uuidString.prefix(8)): \(err.localizedDescription)")
             return
         }
         guard let raw = characteristic.value else { return }
+
+        if characteristic.uuid == CBUUID(string: "2A37") {
+            handleStandardHR(raw)
+            return
+        }
 
         // Handle Device Information Service reads (standard BLE 0x180A)
         let diChars: [CBUUID: String] = [
@@ -4940,9 +5091,23 @@ extension BLEManager: CBPeripheralDelegate {
         // of whether we have a decoder for it. Surfaces stream activity to
         // SettingsView's "All Streams" card so power-user mode can be verified.
         let pType = Int(packet.type)
-        DispatchQueue.main.async {
-            self.packetTypeCounts[pType, default: 0] += 1
-            self.packetTypeLastSeen[pType] = Date()
+        pendingTypeCounts[pType, default: 0] += 1
+        if !typeCountsFlushScheduled {
+            typeCountsFlushScheduled = true
+            bleQueue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self else { return }
+                let counts = self.pendingTypeCounts
+                self.pendingTypeCounts.removeAll()
+                self.typeCountsFlushScheduled = false
+                let seenAt = Date()
+                DispatchQueue.main.async {
+                    var totals = self.packetTypeCounts
+                    var seen = self.packetTypeLastSeen
+                    for (t, c) in counts { totals[t, default: 0] += c; seen[t] = seenAt }
+                    self.packetTypeCounts = totals
+                    self.packetTypeLastSeen = seen
+                }
+            }
         }
 
         // Log non-realtime packets for debugging history sync
@@ -4954,6 +5119,7 @@ extension BLEManager: CBPeripheralDelegate {
             guard let reading = WhoopProtocol.parseHRData(cmd: packet.cmd, data: packet.data) else { return }
 
             if reading.heartRate > 0 {
+                StrapWatchdog.shared.fed()
                 DispatchQueue.main.async {
                     self.heartRate = Int(reading.heartRate)
                     self.readingsToday += 1
@@ -4996,7 +5162,9 @@ extension BLEManager: CBPeripheralDelegate {
                 // the data is great". Keep IMU streaming continuously. The
                 // enable-IMU command (cmd 106) is already sent on every connect
                 // in startRealtimeStreaming, so we just stop disabling it here.
-                if !imuActive {
+                // v115: only when raw capture is opted in. Re-arming here undid the raw-off sent at
+                // connect, so the strap recorded 1.9 KB IMU frames into history and downloads crawled.
+                if !imuActive && rawCaptureEnabled {
                     enableIMUForSleep()  // misnomer now — also fires when awake
                 }
 
@@ -5372,3 +5540,173 @@ extension BLEManager: CBPeripheralDelegate {
     // MARK: - Start of private-var storage for IMU buffer is above; nothing new here.
 }
 
+
+// MARK: - v115 strap silence alarm
+
+/// Dead man's switch for the live stream. Every accepted live reading pushes two pending local
+/// notifications into the future (10 and 40 min after it). If anything stops the stream (the app
+/// crashed or iOS ended it, Bluetooth down, strap off the wrist or empty, live HR paused by a history
+/// download) nothing pushes them again and iOS delivers them, even with the app dead. Their text is
+/// the last thing the app saw. Between 22:00 and 08:00 they arrive without sound.
+final class StrapWatchdog {
+    static let shared = StrapWatchdog()
+    weak var supabase: SupabaseClient?
+
+    private let lastLiveKey = "strap_last_live_at"
+    private static let streaming = "Nothing went wrong before that, so the app itself stopped: a crash, or iOS ended it."
+    private let lock = NSLock()
+    private var lastArmed = Date.distantPast
+    private var lastLive: Date?
+    private var state = StrapWatchdog.streaming
+    private var explainPending = false
+
+    private static let hm: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    private init() {}
+
+    /// Every accepted live reading. Re-arms at most once a minute.
+    func fed() {
+        let now = Date()
+        lock.lock()
+        let previous = lastLive ?? (UserDefaults.standard.object(forKey: lastLiveKey) as? Date)
+        lastLive = now
+        let due = now.timeIntervalSince(lastArmed) >= 60 || state != Self.streaming
+        if due {
+            lastArmed = now
+            state = Self.streaming
+        }
+        lock.unlock()
+        guard due else { return }
+        UserDefaults.standard.set(now, forKey: lastLiveKey)
+        arm(lastLive: now, state: Self.streaming)
+        if let previous, now.timeIntervalSince(previous) >= 30 * 60 {
+            explainSilence()
+        }
+    }
+
+    /// Something changed the story (disconnect, history download, Bluetooth off): the pending alarm now says so.
+    func note(_ newState: String) {
+        lock.lock()
+        state = newState
+        let live = lastLive ?? (UserDefaults.standard.object(forKey: lastLiveKey) as? Date)
+        lock.unlock()
+        guard let live else { return }
+        arm(lastLive: live, state: newState)
+    }
+
+    private func arm(lastLive: Date, state: String) {
+        let center = UNUserNotificationCenter.current()
+        let seen = Self.hm.string(from: lastLive)
+        for (id, minutes) in [("strap-silent-10", 10.0), ("strap-silent-40", 40.0)] {
+            let fire = lastLive.addingTimeInterval(minutes * 60)
+            let wait = fire.timeIntervalSinceNow
+            guard wait > 1 else { continue }
+            let content = UNMutableNotificationContent()
+            content.title = minutes < 30 ? "Strap silent for 10 min" : "Still no strap data after 40 min"
+            content.body = "Last heart rate \(seen). \(state) Open LucidHealth to reconnect."
+            content.threadIdentifier = "strap-watchdog"
+            let hour = Calendar.current.component(.hour, from: fire)
+            if hour >= 22 || hour < 8 {
+                content.sound = nil
+                content.interruptionLevel = .passive
+            } else {
+                content.sound = .default
+                content.interruptionLevel = .timeSensitive
+            }
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: wait, repeats: false)
+            center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
+        }
+    }
+
+    /// After a silence of 30+ min, ask the server why (strap_outage_latest) once its classifier has the
+    /// heartbeats from both sides, and say it in one notification.
+    private func explainSilence() {
+        lock.lock()
+        let already = explainPending
+        explainPending = true
+        lock.unlock()
+        guard !already else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 240) { [weak self] in
+            Task {
+                guard let self else { return }
+                let line = await self.supabase?.fetchStrapOutageLine()
+                self.lock.lock()
+                self.explainPending = false
+                self.lock.unlock()
+                guard let line, !line.isEmpty else { return }
+                let content = UNMutableNotificationContent()
+                content.title = "Strap back after a silence"
+                content.body = line
+                content.threadIdentifier = "strap-watchdog"
+                content.sound = nil
+                content.interruptionLevel = .active
+                UNUserNotificationCenter.current().add(
+                    UNNotificationRequest(identifier: "strap-explained", content: content, trigger: nil))
+            }
+        }
+    }
+}
+
+// MARK: - v115 crash and exit diagnostics
+
+/// Crash reports, hangs and iOS exit reasons reach the server without anyone tapping "Share":
+/// MetricKit hands a crash to the app on its next launch, and the daily metric payload counts how
+/// often iOS ended the app and why (memory, CPU, watchdog, background task timeout).
+final class AppDiagnostics: NSObject, MXMetricManagerSubscriber {
+    static let shared = AppDiagnostics()
+    private weak var ble: BLEManager?
+    private var started = false
+
+    func start(_ ble: BLEManager) {
+        guard !started else { return }
+        started = true
+        self.ble = ble
+        MXMetricManager.shared.add(self)
+        let past = MXMetricManager.shared.pastDiagnosticPayloads
+        if !past.isEmpty { didReceive(past) }
+    }
+
+    func didReceive(_ payloads: [MXDiagnosticPayload]) {
+        guard let ble else { return }
+        let iso = ISO8601DateFormatter()
+        for p in payloads {
+            let window = "at=\(iso.string(from: p.timeStampBegin)) end=\(iso.string(from: p.timeStampEnd))"
+            for c in p.crashDiagnostics ?? [] {
+                let line = "\(window) type=\(c.exceptionType?.stringValue ?? "-") code=\(c.exceptionCode?.stringValue ?? "-")"
+                    + " signal=\(c.signal?.stringValue ?? "-") build=\(c.metaData.applicationBuildVersion)"
+                    + " reason=\(c.terminationReason ?? "-")"
+                ble.log("💥 Crash report from an earlier run: \(line)")
+                ble.supabase.pushDebugLog(key: "app_crash", value: line)
+            }
+            for h in p.hangDiagnostics ?? [] {
+                let secs = h.hangDuration.converted(to: .seconds).value
+                ble.supabase.pushDebugLog(key: "app_hang", value: "\(window) seconds=\(String(format: "%.1f", secs))")
+            }
+            if let json = String(data: p.jsonRepresentation(), encoding: .utf8) {
+                ble.supabase.pushDebugLog(key: "metrickit_diagnostic", value: String(json.prefix(400_000)))
+            }
+        }
+    }
+
+    func didReceive(_ payloads: [MXMetricPayload]) {
+        guard let ble else { return }
+        for p in payloads {
+            guard let obj = (try? JSONSerialization.jsonObject(with: p.jsonRepresentation())) as? [String: Any] else { continue }
+            var out: [String: Any] = [:]
+            out["timeStampBegin"] = obj["timeStampBegin"]
+            out["timeStampEnd"] = obj["timeStampEnd"]
+            out["applicationExitMetrics"] = obj["applicationExitMetrics"]
+            out["memoryMetrics"] = obj["memoryMetrics"]
+            out["cpuMetrics"] = obj["cpuMetrics"]
+            out["applicationTimeMetrics"] = obj["applicationTimeMetrics"]
+            if let data = try? JSONSerialization.data(withJSONObject: out),
+               let text = String(data: data, encoding: .utf8) {
+                ble.supabase.pushDebugLog(key: "metrickit_exits", value: text)
+            }
+        }
+    }
+}
