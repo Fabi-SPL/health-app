@@ -703,13 +703,13 @@ class BLEManager: NSObject, ObservableObject {
                 readinessLevel: he.readiness.rawValue,
                 readinessScore: he.cognitiveCapacity,
                 strainPhysical: {
-                    let total = max(1.0, he.zoneMinutes.map(Double.init).reduce(0, +))
-                    let high = Double(he.zoneMinutes[2]) + Double(he.zoneMinutes[3]) + Double(he.zoneMinutes[4])
+                    let total = max(1.0, he.zoneMinutesSafe.map(Double.init).reduce(0, +))
+                    let high = Double(he.zoneMinutesSafe[2]) + Double(he.zoneMinutesSafe[3]) + Double(he.zoneMinutesSafe[4])
                     return round(he.strainScore * (high / total) * 10) / 10
                 }(),
                 strainStress: {
-                    let total = max(1.0, he.zoneMinutes.map(Double.init).reduce(0, +))
-                    let high = Double(he.zoneMinutes[2]) + Double(he.zoneMinutes[3]) + Double(he.zoneMinutes[4])
+                    let total = max(1.0, he.zoneMinutesSafe.map(Double.init).reduce(0, +))
+                    let high = Double(he.zoneMinutesSafe[2]) + Double(he.zoneMinutesSafe[3]) + Double(he.zoneMinutesSafe[4])
                     let physFrac = high / total
                     let dfaFrac = he.dfaAlpha1 > 0 ? max(0.0, min(0.5, (1.5 - he.dfaAlpha1) / 1.5)) : 0.2
                     let sPhysical = he.strainScore * physFrac
@@ -717,8 +717,8 @@ class BLEManager: NSObject, ObservableObject {
                     return round(max(0.0, he.strainScore - sPhysical - sAutonomic) * 10) / 10
                 }(),
                 strainAutonomic: {
-                    let total = max(1.0, he.zoneMinutes.map(Double.init).reduce(0, +))
-                    let high = Double(he.zoneMinutes[2]) + Double(he.zoneMinutes[3]) + Double(he.zoneMinutes[4])
+                    let total = max(1.0, he.zoneMinutesSafe.map(Double.init).reduce(0, +))
+                    let high = Double(he.zoneMinutesSafe[2]) + Double(he.zoneMinutesSafe[3]) + Double(he.zoneMinutesSafe[4])
                     let physFrac = high / total
                     let dfaFrac = he.dfaAlpha1 > 0 ? max(0.0, min(0.5, (1.5 - he.dfaAlpha1) / 1.5)) : 0.2
                     return round(he.strainScore * dfaFrac * (1.0 - physFrac) * 10) / 10
@@ -1196,6 +1196,7 @@ class BLEManager: NSObject, ObservableObject {
     }
 
     func disconnect() {
+        StrapWatchdog.shared.disarm()
         reconnectTimer?.invalidate()
         pushTimer?.invalidate()
         connectTimeout?.invalidate()
@@ -1590,12 +1591,15 @@ class BLEManager: NSObject, ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             // 1. Fetch the set of minutes already covered
+            // v115: the dedup set must span the finalizer's whole accept window, or a re-run re-inserts
+            // records 3 to 14 days old (pushBackfillBatch is a plain insert).
             let existing = await self.supabase.fetchMinutesWithData(
-                since: self.manualBackfillWindowStart,
+                since: Date().addingTimeInterval(-self.historyAcceptDepth),
                 until: self.manualBackfillWindowEnd
             )
             self.manualBackfillExistingMinutes = existing
-            let gapsMinutes = (72 * 60) - existing.count
+            let floor = Int(self.manualBackfillWindowStart.timeIntervalSince1970)
+            let gapsMinutes = (72 * 60) - existing.filter { $0 >= floor }.count
             self.log("manualBackfill: \(existing.count) minutes have data, \(gapsMinutes) minutes are gaps to fill")
             self.supabase.pushDebugLog(key: "history_sync_dedup_set", value: "trigger=manual-72h minutes_with_data=\(existing.count) gaps_to_fill=\(gapsMinutes)")
 
@@ -1679,7 +1683,7 @@ class BLEManager: NSObject, ObservableObject {
         // isManualBackfillMode is false here so the finalizer treats it as auto.)
         Task { [weak self] in
             guard let self else { return }
-            // Must cover the same depth the finalizer now accepts (96h), not just
+            // Must cover the same depth the finalizer now accepts (14 days), not just
             // the gap window. A dedup set narrower than the accept window would let
             // already-stored minutes re-upload as duplicates.
             let existing = await self.supabase.fetchMinutesWithData(
@@ -1842,7 +1846,8 @@ class BLEManager: NSObject, ObservableObject {
                     return meanSqDiff > 0 ? meanSqDiff.squareRoot() : 0
                 }()
                 dedupedRecords.append((recordedAt, r.heartRate, r.rrIntervals, rmssd))
-                if r.heartRate > 30 {
+                // v115: the accept window is 14 days now; days-old records must not land in tonight's stages.
+                if r.heartRate > 30, recordedAt >= Date().addingTimeInterval(-16 * 3600) {
                     sleepReplayPairs.append((Int(r.heartRate), recordedAt))
                 }
             }
@@ -1934,6 +1939,7 @@ class BLEManager: NSObject, ObservableObject {
             // Replay successfully-uploaded readings through sleep detection so
             // sleep_start/stages get retroactively corrected for any sleep window
             // that was in the gap (works for both auto-reconnect and manual paths).
+            sleepReplayPairs.sort { $0.time < $1.time }
             if !sleepReplayPairs.isEmpty {
                 self.log("Replaying \(sleepReplayPairs.count) gap readings for sleep analysis")
                 self.healthEngine.replayGapForSleep(readings: sleepReplayPairs)
@@ -2011,6 +2017,7 @@ class BLEManager: NSObject, ObservableObject {
         case 1: // META_HISTORY_START
             historyBatchCount += 1
             historyBatchStartTotal = historyBuffer.count
+            StrapWatchdog.shared.historyAlive()
             // Idle, not total: 7 syncs since 09-27 were cut off at 120 s with 9-20 batches still flowing.
             armHistorySyncTimeout(trigger: trigger)
             log("History batch \(historyBatchCount) started")
@@ -2444,13 +2451,13 @@ class BLEManager: NSObject, ObservableObject {
                 readinessLevel: he.readiness.rawValue,
                 readinessScore: he.cognitiveCapacity,
                 strainPhysical: {
-                    let total = max(1.0, he.zoneMinutes.map(Double.init).reduce(0, +))
-                    let high = Double(he.zoneMinutes[2]) + Double(he.zoneMinutes[3]) + Double(he.zoneMinutes[4])
+                    let total = max(1.0, he.zoneMinutesSafe.map(Double.init).reduce(0, +))
+                    let high = Double(he.zoneMinutesSafe[2]) + Double(he.zoneMinutesSafe[3]) + Double(he.zoneMinutesSafe[4])
                     return round(he.strainScore * (high / total) * 10) / 10
                 }(),
                 strainStress: {
-                    let total = max(1.0, he.zoneMinutes.map(Double.init).reduce(0, +))
-                    let high = Double(he.zoneMinutes[2]) + Double(he.zoneMinutes[3]) + Double(he.zoneMinutes[4])
+                    let total = max(1.0, he.zoneMinutesSafe.map(Double.init).reduce(0, +))
+                    let high = Double(he.zoneMinutesSafe[2]) + Double(he.zoneMinutesSafe[3]) + Double(he.zoneMinutesSafe[4])
                     let physFrac = high / total
                     let dfaFrac = he.dfaAlpha1 > 0 ? max(0.0, min(0.5, (1.5 - he.dfaAlpha1) / 1.5)) : 0.2
                     let sPhysical = he.strainScore * physFrac
@@ -2458,8 +2465,8 @@ class BLEManager: NSObject, ObservableObject {
                     return round(max(0.0, he.strainScore - sPhysical - sAutonomic) * 10) / 10
                 }(),
                 strainAutonomic: {
-                    let total = max(1.0, he.zoneMinutes.map(Double.init).reduce(0, +))
-                    let high = Double(he.zoneMinutes[2]) + Double(he.zoneMinutes[3]) + Double(he.zoneMinutes[4])
+                    let total = max(1.0, he.zoneMinutesSafe.map(Double.init).reduce(0, +))
+                    let high = Double(he.zoneMinutesSafe[2]) + Double(he.zoneMinutesSafe[3]) + Double(he.zoneMinutesSafe[4])
                     let physFrac = high / total
                     let dfaFrac = he.dfaAlpha1 > 0 ? max(0.0, min(0.5, (1.5 - he.dfaAlpha1) / 1.5)) : 0.2
                     return round(he.strainScore * dfaFrac * (1.0 - physFrac) * 10) / 10
@@ -2958,11 +2965,14 @@ extension BLEManager: CBPeripheralDelegate {
             supabase.pushWhoopEvent(type: "std_hr_seen",
                                     data: ["bpm": "\(bpm)", "rr": "\(rr.count)", "during_history": "\(isDownloadingHistory)"])
         }
-        guard isDownloadingHistory, (25...220).contains(bpm) else { return }
+        guard isDownloadingHistory, (25...220).contains(bpm),
+              Date().timeIntervalSince(lastDataReceived) > 5 else { return }   // WHOOP live data still flowing
         StrapWatchdog.shared.fed()
         DispatchQueue.main.async { self.heartRate = bpm }
-        pendingReadings.append(HRReading(timestamp: UInt32(Date().timeIntervalSince1970),
-                                         heartRate: UInt8(bpm), rrIntervals: rr))
+        // Backfill path: stored with its own timestamp as whoop_ble_backfill, so it cannot read as a fresh
+        // live row and make the next reconnect skip its download.
+        carriedHistory.append(HRReading(timestamp: UInt32(Date().timeIntervalSince1970),
+                                        heartRate: UInt8(bpm), rrIntervals: rr))
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -3767,8 +3777,8 @@ extension BLEManager: CBPeripheralDelegate {
         )
 
         let currentHR = heartRate
-        let avgHR = healthEngine.recentHR.isEmpty ? 70.0 :
-            healthEngine.recentHR.suffix(10).reduce(0, +) / Double(min(healthEngine.recentHR.count, 10))
+        let avgHR = healthEngine.recentHRForUI.isEmpty ? 70.0 :
+            healthEngine.recentHRForUI.suffix(10).reduce(0, +) / Double(min(healthEngine.recentHRForUI.count, 10))
         let hrVariability = healthEngine.currentRMSSD
 
         supabase.pushActivity(
@@ -3838,8 +3848,8 @@ extension BLEManager: CBPeripheralDelegate {
         )
 
         let currentHR = heartRate
-        let avgHR = healthEngine.recentHR.isEmpty ? 70.0 :
-            healthEngine.recentHR.suffix(10).reduce(0, +) / Double(min(healthEngine.recentHR.count, 10))
+        let avgHR = healthEngine.recentHRForUI.isEmpty ? 70.0 :
+            healthEngine.recentHRForUI.suffix(10).reduce(0, +) / Double(min(healthEngine.recentHRForUI.count, 10))
 
         supabase.pushActivity(
             type: type,
@@ -5559,6 +5569,7 @@ final class StrapWatchdog {
     private var lastLive: Date?
     private var state = StrapWatchdog.streaming
     private var explainPending = false
+    private var disarmed = false   // a deliberate disconnect: no alarm until the next live reading
 
     private static let hm: DateFormatter = {
         let f = DateFormatter()
@@ -5574,15 +5585,16 @@ final class StrapWatchdog {
         lock.lock()
         let previous = lastLive ?? (UserDefaults.standard.object(forKey: lastLiveKey) as? Date)
         lastLive = now
-        let due = now.timeIntervalSince(lastArmed) >= 60 || state != Self.streaming
+        let due = now.timeIntervalSince(lastArmed) >= 60 || state != Self.streaming || disarmed
         if due {
             lastArmed = now
             state = Self.streaming
+            disarmed = false
         }
         lock.unlock()
         guard due else { return }
         UserDefaults.standard.set(now, forKey: lastLiveKey)
-        arm(lastLive: now, state: Self.streaming)
+        arm(from: now, lastLive: now, state: Self.streaming)
         if let previous, now.timeIntervalSince(previous) >= 30 * 60 {
             explainSilence()
         }
@@ -5593,16 +5605,38 @@ final class StrapWatchdog {
         lock.lock()
         state = newState
         let live = lastLive ?? (UserDefaults.standard.object(forKey: lastLiveKey) as? Date)
+        let off = disarmed
         lock.unlock()
-        guard let live else { return }
-        arm(lastLive: live, state: newState)
+        guard let live, !off else { return }
+        arm(from: live, lastLive: live, state: newState)
     }
 
-    private func arm(lastLive: Date, state: String) {
+    /// v115: a history batch arrived. The strap is alive even though live heart rate is paused for the
+    /// download, so the alarm counts from now. Re-arms at most once a minute.
+    func historyAlive() {
+        let now = Date()
+        lock.lock()
+        let due = now.timeIntervalSince(lastArmed) >= 60 && !disarmed
+        if due { lastArmed = now }
+        let st = state
+        let live = lastLive ?? (UserDefaults.standard.object(forKey: lastLiveKey) as? Date) ?? now
+        lock.unlock()
+        if due { arm(from: now, lastLive: live, state: st) }
+    }
+
+    /// v115: the user disconnected on purpose. Drop the pending alarms until the strap streams again.
+    func disarm() {
+        lock.lock()
+        disarmed = true
+        lock.unlock()
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["strap-silent-10", "strap-silent-40"])
+    }
+
+    private func arm(from base: Date, lastLive: Date, state: String) {
         let center = UNUserNotificationCenter.current()
         let seen = Self.hm.string(from: lastLive)
         for (id, minutes) in [("strap-silent-10", 10.0), ("strap-silent-40", 40.0)] {
-            let fire = lastLive.addingTimeInterval(minutes * 60)
+            let fire = base.addingTimeInterval(minutes * 60)
             let wait = fire.timeIntervalSinceNow
             guard wait > 1 else { continue }
             let content = UNMutableNotificationContent()
@@ -5673,7 +5707,14 @@ final class AppDiagnostics: NSObject, MXMetricManagerSubscriber {
     func didReceive(_ payloads: [MXDiagnosticPayload]) {
         guard let ble else { return }
         let iso = ISO8601DateFormatter()
-        for p in payloads {
+        // pastDiagnosticPayloads can hand back payloads already reported; keep only newer ones.
+        let ud = UserDefaults.standard
+        let seenEnd = ud.double(forKey: "mx_diag_last_end")
+        let fresh = payloads.filter { $0.timeStampEnd.timeIntervalSince1970 > seenEnd }
+        if let newest = fresh.map({ $0.timeStampEnd.timeIntervalSince1970 }).max() {
+            ud.set(newest, forKey: "mx_diag_last_end")
+        }
+        for p in fresh {
             let window = "at=\(iso.string(from: p.timeStampBegin)) end=\(iso.string(from: p.timeStampEnd))"
             for c in p.crashDiagnostics ?? [] {
                 let line = "\(window) type=\(c.exceptionType?.stringValue ?? "-") code=\(c.exceptionCode?.stringValue ?? "-")"

@@ -156,6 +156,7 @@ extension HealthEngine {
             // first reading of each day (00:00:00 on 10-08, when the app died), racing the main thread.
             DispatchQueue.main.async {
                 self.zoneMinutes = [0, 0, 0, 0, 0]
+                self.zoneLock.lock(); self.zoneMinutesShadow = self.zoneMinutes; self.zoneLock.unlock()
                 self.edwardsTRIMP = 0
             }
         }
@@ -168,6 +169,7 @@ extension HealthEngine {
             DispatchQueue.main.async {
                 if zone < self.zoneMinutes.count {
                     self.zoneMinutes[zone] += 1
+                    self.zoneLock.lock(); self.zoneMinutesShadow = self.zoneMinutes; self.zoneLock.unlock()
                 }
                 self.edwardsTRIMP = self.computeEdwardsTRIMP()
             }

@@ -71,6 +71,10 @@ class HealthEngine: ObservableObject {
     @Published var strainScore: Double = 0
     @Published var currentHRZone: Int = 0
     @Published var zoneMinutes: [Int] = [0, 0, 0, 0, 0]
+    // v115: zoneMinutes is written on main; the Bluetooth queue reads this locked copy instead.
+    let zoneLock = NSLock()
+    var zoneMinutesShadow: [Int] = [0, 0, 0, 0, 0]
+    var zoneMinutesSafe: [Int] { zoneLock.lock(); defer { zoneLock.unlock() }; return zoneMinutesShadow }
 
     // Body Battery & Training Load
     @Published var bodyBattery: Double = 100
