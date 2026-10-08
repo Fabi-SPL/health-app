@@ -27,10 +27,18 @@ jobs:
           ANON: ${{ secrets.SUPABASE_ANON_KEY }}
           BASE: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
         run: |
-          echo "runner ip: $(curl -s -m 10 https://api.ipify.org || echo unknown)"
+          IP=$(curl -s -m 10 https://api.ipify.org || echo unknown)
+          echo "runner ip: $IP"
+          REACHED=0
           for path in /auth/v1/health /rest/v1/; do
-            curl -s -o /dev/null -m 15 -H "apikey: $ANON" -w "$path http=%{http_code} connect=%{time_connect}s total=%{time_total}s\n" "$BASE$path" || echo "$path FAILED (curl exit $?)"
+            curl -s -o /dev/null -m 15 -H "apikey: $ANON" -w "$path http=%{http_code} connect=%{time_connect}s total=%{time_total}s\n" "$BASE$path" && REACHED=1 || echo "$path FAILED (curl exit $?)"
           done
+          # 2026-10-08: the server stopped answering GitHub's macOS runners (13.105.117.x) after 11:50 UTC,
+          # and every screen came back empty. Stop here with the reason instead of 25 min of blank shots.
+          if [ "$REACHED" = "0" ]; then
+            echo "::error::The Supabase server does not answer this runner ($IP). Screens would load no data. Check the server firewall for this IP range."
+            exit 1
+          fi
 
       - name: Select latest Xcode
         run: |
