@@ -98,21 +98,26 @@ jobs:
           xcrun simctl status_bar "$UDID" override --batteryState charged --batteryLevel 100 --wifiBars 3 --cellularBars 4 || true
           xcrun simctl install "$UDID" "$APP"
           DATA=$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)
-          mkdir -p shots
+          mkdir -p shots applogs
           FAIL=""
           shoot() {
             NAME="$1"; ARG="$2"; WAIT="$3"
             rm -f "$DATA/Documents/lucid-screen-$ARG.ok"
             xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
             sleep 1
-            SIMCTL_CHILD_TZ=Europe/Berlin xcrun simctl launch "$UDID" "$BUNDLE" -LucidScreen "$ARG" >/dev/null
+            SIMCTL_CHILD_TZ=Europe/Berlin xcrun simctl launch --stdout="$PWD/applogs/$NAME.log" --stderr="$PWD/applogs/$NAME.log" "$UDID" "$BUNDLE" -LucidScreen "$ARG" >/dev/null
             sleep "$WAIT"
             xcrun simctl io "$UDID" screenshot "shots/$NAME.png" >/dev/null 2>&1
             SIZE=$(stat -f%z "shots/$NAME.png")
             ALIVE=$(xcrun simctl spawn "$UDID" launchctl list | grep -c "$BUNDLE" || true)
             MARK=no; [ -f "$DATA/Documents/lucid-screen-$ARG.ok" ] && MARK=yes
             echo "$NAME: ${SIZE} bytes, running=$ALIVE, rendered=$MARK"
-            if [ "$ALIVE" = "0" ] || [ "$MARK" = "no" ] || [ "$SIZE" -lt 60000 ]; then FAIL="$FAIL $NAME"; fi
+            if [ "$ALIVE" = "0" ] || [ "$MARK" = "no" ] || [ "$SIZE" -lt 60000 ]; then
+              FAIL="$FAIL $NAME"
+              echo "--- $NAME app output (last 40 lines) ---"
+              tail -40 "applogs/$NAME.log" 2>/dev/null || true
+            fi
+            grep -h "\[Strain\]\|\[Food\]" "applogs/$NAME.log" 2>/dev/null | tail -5 || true
           }
           xcrun simctl ui "$UDID" appearance dark
           shoot 01-today today 25

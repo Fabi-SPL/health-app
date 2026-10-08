@@ -179,7 +179,41 @@ enum StrainDayAPI {
         return [StrainHRPoint(at: a, bpm: sum / Double(n))]
     }
 
+    // v115: the server averages the 15 minute slices (strain_hr_slices, v202) in one GET, instead of one
+    // request per slice over every raw 1 Hz row (~80k rows a day). nil means fall back to the slices.
+    static func hrSlicesServer(from: Date, to: Date) async -> [StrainHRPoint]? {
+        do {
+            let client = SupabaseClient.shared
+            try await client.ensureAuth()
+            guard let token = client.accessToken,
+                  var comps = URLComponents(string: "\(client.baseURL)/rest/v1/rpc/strain_hr_slices") else { return nil }
+            comps.queryItems = [
+                URLQueryItem(name: "p_from", value: StrainParse.iso(from)),
+                URLQueryItem(name: "p_to", value: StrainParse.iso(to))
+            ]
+            guard let url = comps.url else { return nil }
+            var req = URLRequest(url: url)
+            req.httpMethod = "GET"
+            req.timeoutInterval = 25
+            req.setValue(client.anonKey, forHTTPHeaderField: "apikey")
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse, http.statusCode < 300,
+                  let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+            var out: [StrainHRPoint] = []
+            for r in parsed {
+                if let at = StrainParse.date(r["at"]), let bpm = StrainParse.num(r["bpm"]) {
+                    out.append(StrainHRPoint(at: at, bpm: bpm))
+                }
+            }
+            return out.sorted { $0.at < $1.at }
+        } catch {
+            return nil
+        }
+    }
+
     static func fetchHR(uid: String, from: Date, to: Date) async -> [StrainHRPoint] {
+        if let server = await hrSlicesServer(from: from, to: to) { return server }
         var starts: [Date] = []
         var t = from
         while t < to {
@@ -691,7 +725,9 @@ final class StrainDayModel: ObservableObject {
         let rhr: Double? = engine.baselineRHR > 30 ? engine.baselineRHR : nil
         let mono: Double? = engine.trainingMonotony > 0 ? engine.trainingMonotony : nil
         let vo2: Double? = engine.vo2maxEstimate > 0 ? engine.vo2maxEstimate : nil
+        let t0 = Date()
         let result = await StrainDayAPI.loadDay(day: day, rhrFallback: rhr, monotonyFallback: mono, vo2Fallback: vo2)
+        print("[Strain] loadDay \(StrainParse.dayKey(day)) took \(Int(Date().timeIntervalSince(t0) * 1000)) ms, \(result.hr.count) hr points, \(result.blocks.count) blocks, cancelled=\(Task.isCancelled) stale=\(mine != generation)")
         if Task.isCancelled || mine != generation { return }
         data = result
         loading = false
