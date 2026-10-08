@@ -285,7 +285,8 @@ private struct RecoveryV3Content: View {
         let days: [DailyMetric] = trendDays
         if days.count >= 2 {
             V3Card {
-                V3CardHeader(title: "Last " + String(days.count) + " days", trailing: trendTrailing(days))
+                // v115: these are the last nights that have a score, which can span weeks; say so and date each bar.
+                V3CardHeader(title: "Last " + String(days.count) + " scored nights", trailing: trendTrailing(days))
                 RecoveryV3Bars(days: days)
             }
         }
@@ -414,7 +415,7 @@ private struct RecoveryV3Bars: View {
         return VStack(spacing: 6) {
             Text(String(Int(v.rounded()))).font(V3Font.num(12, .semibold)).foregroundStyle(V3.t2)
             RoundedRectangle(cornerRadius: 6, style: .continuous).fill(V3.recovery(v)).frame(height: h)
-            Text(BoardFormat.weekdayShort(d.date)).font(V3Font.text(11)).foregroundStyle(V3.t3)
+            Text(BoardFormat.weekdayShort(d.date) + " " + String(Int(d.date.suffix(2)) ?? 0)).font(V3Font.text(11)).foregroundStyle(V3.t3)
         }
         .frame(maxWidth: .infinity)
     }

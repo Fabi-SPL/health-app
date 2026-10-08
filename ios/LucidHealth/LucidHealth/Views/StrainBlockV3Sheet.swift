@@ -333,9 +333,14 @@ private struct BlockV3HRChart: View {
                 let zt = Text("zone 1 starts at " + String(Int(zone))).font(V3Font.text(12)).foregroundColor(V3.t2)
                 let rz = ctx.resolve(zt)
                 let sz: CGSize = rz.measure(in: CGSize(width: w, height: 40))
-                let chip = CGRect(x: w - sz.width - 10, y: yOf(zone) - sz.height - 9, width: sz.width + 10, height: sz.height + 5)
+                // v115: the chip moves to the left when the peak dot sits on the right, so the dot never covers it.
+                let peakX: CGFloat = slices.max(by: { $0.bpm < $1.bpm }).map { xOf($0.mid) } ?? 0
+                let onRight: Bool = peakX < w * 0.5
+                let chipX: CGFloat = onRight ? w - sz.width - 10 : 0
+                let chip = CGRect(x: chipX, y: yOf(zone) - sz.height - 9, width: sz.width + 10, height: sz.height + 5)
                 ctx.fill(Path(roundedRect: chip, cornerRadius: 6), with: .color(V3.card.opacity(0.9)))
-                ctx.draw(rz, at: CGPoint(x: w - 5, y: yOf(zone) - 6.5), anchor: .bottomTrailing)
+                ctx.draw(rz, at: CGPoint(x: onRight ? w - 5 : 5, y: yOf(zone) - 6.5),
+                         anchor: onRight ? .bottomTrailing : .bottomLeading)
             }
 
             if let peak = slices.max(by: { $0.bpm < $1.bpm }) {
@@ -352,7 +357,7 @@ private struct BlockV3HRChart: View {
             ctx.draw(startLabel, at: CGPoint(x: 0, y: plotH + 12), anchor: .leading)
             for t in ticks {
                 let x: CGFloat = xOf(t)
-                if x < 44 || x > w - 22 { continue }
+                if x < 64 || x > w - 22 { continue }   // v115: 44 let "06:00" overlap the start label
                 let tl = Text(V3Format.hhmm(t)).font(V3Font.text(11)).foregroundColor(V3.t3)
                 ctx.draw(tl, at: CGPoint(x: x, y: plotH + 12), anchor: .center)
             }
