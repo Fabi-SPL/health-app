@@ -5644,7 +5644,7 @@ final class StrapWatchdog {
                 content.threadIdentifier = "strap-watchdog"
                 content.sound = nil
                 content.interruptionLevel = .active
-                UNUserNotificationCenter.current().add(
+                try? await UNUserNotificationCenter.current().add(
                     UNNotificationRequest(identifier: "strap-explained", content: content, trigger: nil))
             }
         }
