@@ -23,6 +23,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Can this runner reach the server
+        id: reach
         env:
           ANON: ${{ secrets.SUPABASE_ANON_KEY }}
           BASE: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
@@ -35,9 +36,13 @@ jobs:
           done
           # 2026-10-08: the server stopped answering GitHub's macOS runners (13.105.117.x) after 11:50 UTC,
           # and every screen came back empty. Stop here with the reason instead of 25 min of blank shots.
+          # 2026-10-09: the edge firewall now only answers home + tailnet, so this is the normal case.
+          # Still compile (the only build check without a Mac); only the screenshots need the server.
           if [ "$REACHED" = "0" ]; then
-            echo "::error::The Supabase server does not answer this runner ($IP). Screens would load no data. Check the server firewall for this IP range."
-            exit 1
+            echo "::warning::The Supabase server does not answer this runner ($IP). Compiling only, no screenshots."
+            echo "reachable=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "reachable=1" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Select latest Xcode
@@ -107,6 +112,7 @@ jobs:
           echo "BUILD OK"
 
       - name: Boot, install, screenshot every screen
+        if: steps.reach.outputs.reachable == '1'
         run: |
           BUNDLE=com.fabi.lucidhealth
           APP=$(find $RUNNER_TEMP/DD/Build/Products/Debug-iphonesimulator -maxdepth 1 -name "LucidHealth.app" | head -1)

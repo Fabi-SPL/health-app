@@ -319,6 +319,10 @@ class BLEManager: NSObject, ObservableObject {
     // payload form this firmware actually takes.
     private var rawDataOnAt: Date?
     private var historyBatchStartTotal = 0
+    // v116: every packet the strap sent inside the current batch, by type. A page of console logs
+    // or off-wrist records has no heart rate but is still a page the strap wants acknowledged.
+    private var historyBatchKinds: [UInt8: Int] = [:]
+    private var historyNoHRAcks = 0
 
     // Standard BLE Device Information Service (0x180A)
     private let deviceInfoServiceUUID = CBUUID(string: "180A")
@@ -1092,6 +1096,7 @@ class BLEManager: NSObject, ObservableObject {
         timer.schedule(deadline: .now() + watchdogInterval, repeating: watchdogInterval)
         timer.setEventHandler { [weak self] in
             self?.checkDataFreshness()
+            self?.considerHistoryDrain()
         }
         timer.resume()
         watchdogTimer = timer
@@ -1195,6 +1200,54 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    // v116: the strap records every second into its own queue and always serves the OLDEST unacked
+    // page first. Drained only when the server saw a gap, that queue grew for days while live HR
+    // looked fine, so a two-minute dropout queued behind all of it and never came back. Keeping the
+    // queue short is what makes a dropout cheap: drain it every 45 min while connected.
+    private let historyDrainedKey = "lucid_history_drained_at"
+    private let historyDrainEvery: TimeInterval = 45 * 60
+    private var lastDrainAttempt = Date.distantPast
+
+    var historyDrainDue: Bool {
+        let at = UserDefaults.standard.double(forKey: historyDrainedKey)
+        return at <= 0 || Date().timeIntervalSince1970 - at > historyDrainEvery
+    }
+
+    /// Live HR feeds the night's staging and the smart alarm, so a drain that only keeps the queue
+    /// short waits for the morning. A real gap still downloads at any hour (the connect path).
+    func historyDrainAllowed(sleeping: Bool, at date: Date = Date()) -> Bool {
+        if sleeping { return false }
+        guard healthEngine.alarmEnabled else { return true }
+        let cal = Calendar.current
+        let minute = cal.component(.hour, from: date) * 60 + cal.component(.minute, from: date)
+        let start = healthEngine.alarmWindowStart - 45, end = healthEngine.alarmWindowEnd + 15
+        return !(minute >= start && minute <= end)
+    }
+
+    /// Watchdog tick (bleQueue, every 30 s while streaming).
+    private func considerHistoryDrain() {
+        guard !isDownloadingHistory, peripheral != nil, cmdToStrap != nil, historyDrainDue,
+              Date().timeIntervalSince(lastDrainAttempt) > 10 * 60,
+              Date().timeIntervalSince(lastDataReceived) < 60 else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let sleeping = self.healthEngine.sleepDetected
+            self.bleQueue.async {
+                guard !self.isDownloadingHistory, self.historyDrainAllowed(sleeping: sleeping),
+                      let p = self.peripheral, let c = self.cmdToStrap else { return }
+                self.lastDrainAttempt = Date()
+                let at = UserDefaults.standard.double(forKey: self.historyDrainedKey)
+                let mins = at > 0 ? Int((Date().timeIntervalSince1970 - at) / 60) : -1
+                self.supabase.pushDebugLog(key: "history_drain_start", value: "reason=periodic mins_since_drained=\(mins)")
+                p.writeValue(WhoopProtocol.stopHRPacket(), for: c, type: .withResponse)
+                self.bleQueue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    guard let self, !self.isDownloadingHistory else { return }
+                    self.startHistoryDownload()
+                }
+            }
+        }
+    }
+
     func disconnect() {
         StrapWatchdog.shared.disarm()
         reconnectTimer?.invalidate()
@@ -1251,6 +1304,12 @@ class BLEManager: NSObject, ObservableObject {
             p.writeValue(WhoopProtocol.listHapticsPacket(), for: c, type: .withResponse)
         }
 
+        // v116: how deep the strap's unsent queue is, read-only, before CMD 22 (never after it, see below).
+        bleQueue.asyncAfter(deadline: .now() + 3.9) { [weak self] in
+            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+            p.writeValue(WhoopProtocol.getDataRangePacket(), for: c, type: .withResponse)
+        }
+
         // After Step 4/4b: when CMD 35 + haptic list landed after CMD 22, 130 of 139 syncs froze after ~5 packets.
         bleQueue.asyncAfter(deadline: .now() + 4.5) { [weak self] in
             guard let self, let _ = self.peripheral, let _ = self.cmdToStrap else { return }
@@ -1282,6 +1341,8 @@ class BLEManager: NSObject, ObservableObject {
                 guard let self else { return }
                 let cursor = await self.supabase.fetchSyncCursor(before: connectStart)
                 let serverMins = cursor?.minutesSinceLast
+                let sleeping = await MainActor.run { self.healthEngine.sleepDetected }
+                let drainNow = self.historyDrainDue && self.historyDrainAllowed(sleeping: sleeping)
 
                 // Resolve the authoritative decision + the backfill start boundary.
                 let usedSource: String
@@ -1290,9 +1351,9 @@ class BLEManager: NSObject, ObservableObject {
                 let gapStart: Date
                 if let cursor, let mins = serverMins, let lastAt = cursor.lastRecordedAt {
                     // Server PROVED a pre-connect live sample. Skip only if fresh.
-                    usedSource = "server"
+                    usedSource = drainNow && mins <= 1 ? "server_drain_due" : "server"
                     gapMinutes = Int(mins)
-                    willDownload = mins > 1
+                    willDownload = mins > 1 || drainNow
                     gapStart = lastAt
                 } else if cursor != nil {
                     // Fetched OK but no live rows before connect = genuine first
@@ -1617,6 +1678,7 @@ class BLEManager: NSObject, ObservableObject {
                 self.historyBuffer.removeAll()
                 self.carriedHistory = self.loadPendingHistory()
                 self.historyBatchCount = 0
+                self.historyNoHRAcks = 0
                 self.gapStartTime = self.manualBackfillWindowStart
                 self.gapEndTime = self.manualBackfillWindowEnd
 
@@ -1670,6 +1732,7 @@ class BLEManager: NSObject, ObservableObject {
         historyBuffer.removeAll()
         carriedHistory = loadPendingHistory()
         historyBatchCount = 0
+        historyNoHRAcks = 0
 
         DispatchQueue.main.async {
             self.connectionState = .syncing
@@ -2017,6 +2080,7 @@ class BLEManager: NSObject, ObservableObject {
         case 1: // META_HISTORY_START
             historyBatchCount += 1
             historyBatchStartTotal = historyBuffer.count
+            historyBatchKinds.removeAll()
             StrapWatchdog.shared.historyAlive()
             // Idle, not total: 7 syncs since 09-27 were cut off at 120 s with 9-20 batches still flowing.
             armHistorySyncTimeout(trigger: trigger)
@@ -2051,14 +2115,30 @@ class BLEManager: NSObject, ObservableObject {
             // aborted instead (CMD 20, read-only), so nothing can be thrown away
             // that we never got.
             let deliveredThisBatch = historyBuffer.count - historyBatchStartTotal
-            // v115: the strap re-serves the same empty batch until it is acked. Since 10-06 21:10 every
-            // sync aborted at trim 22672, so no night after that could ever backfill. Three empty aborts
-            // at one trim value mean the batch holds nothing the parser can read; ack it once to move on.
+            let packetsThisBatch = historyBatchKinds.values.reduce(0, +)
+            let kinds = historyBatchKinds.sorted { $0.key < $1.key }.map { "t\($0.key):\($0.value)" }.joined(separator: ",")
+            // v116: the strap re-serves a page until it is acked, and everything newer waits behind it.
+            // From 10-06 21:10 it re-served one page of 53 console logs from 10-01 on every connect, the
+            // app refused it for holding no heart rate, and no night after that could ever come back.
+            // The guard only has a point when NOTHING arrived (lost notifications). A page that arrived
+            // in full is acked whatever it holds; its console logs and events are already uploaded above.
             let emptyTrim = (trim10 ?? trim8).map { Int($0) }
             let ud = UserDefaults.standard
             let sameEmptyTrim = emptyTrim != nil && (ud.object(forKey: "history_empty_abort_trim") as? Int) == emptyTrim
             let emptyAborts = sameEmptyTrim ? ud.integer(forKey: "history_empty_abort_count") + 1 : 1
-            if deliveredThisBatch == 0 && historyBuffer.isEmpty, let wedged = trim10 ?? trim8, emptyAborts >= 3 {
+            if deliveredThisBatch == 0 && packetsThisBatch > 0, let trim = trim10 ?? trim8 {
+                historyNoHRAcks += 1
+                if historyNoHRAcks <= 3 || historyNoHRAcks % 50 == 0 {
+                    supabase.pushDebugLog(key: "history_nohr_batch_ack", value: "trigger=\(trigger) batch=\(historyBatchCount) trim=\(trim) kinds=\(kinds) nohr_acks=\(historyNoHRAcks)")
+                }
+                ud.removeObject(forKey: "history_empty_abort_trim")
+                ud.removeObject(forKey: "history_empty_abort_count")
+                StrapWatchdog.shared.historyAlive()
+                armHistorySyncTimeout(trigger: trigger)
+                if let p = peripheral, let c = cmdToStrap {
+                    p.writeValue(WhoopProtocol.historyAckPacket(trim: trim), for: c, type: .withResponse)
+                }
+            } else if deliveredThisBatch == 0 && historyBuffer.isEmpty, let wedged = trim10 ?? trim8, emptyAborts >= 3 {
                 log("History batch \(historyBatchCount) EMPTY at trim \(wedged) for the \(emptyAborts)th time — acking to unwedge")
                 supabase.pushDebugLog(key: "history_unwedge_ack", value: "trigger=\(trigger) batch=\(historyBatchCount) trim=\(wedged) empty_aborts=\(emptyAborts)")
                 ud.removeObject(forKey: "history_empty_abort_trim")
@@ -2070,7 +2150,7 @@ class BLEManager: NSObject, ObservableObject {
                 ud.set(emptyTrim, forKey: "history_empty_abort_trim")
                 ud.set(emptyAborts, forKey: "history_empty_abort_count")
                 log("History batch \(historyBatchCount) ended EMPTY — aborting instead of trimming")
-                supabase.pushDebugLog(key: "history_sync_batch_empty_abort", value: "trigger=\(trigger) batch=\(historyBatchCount) would_have_trimmed=\(trim10 ?? trim8 ?? 0)")
+                supabase.pushDebugLog(key: "history_sync_batch_empty_abort", value: "trigger=\(trigger) batch=\(historyBatchCount) would_have_trimmed=\(trim10 ?? trim8 ?? 0) kinds=\(kinds.isEmpty ? "none" : kinds)")
                 if let p = peripheral, let c = cmdToStrap {
                     p.writeValue(WhoopProtocol.abortHistoricalTransmitsPacket(), for: c, type: .withResponse)
                 }
@@ -2092,6 +2172,8 @@ class BLEManager: NSObject, ObservableObject {
         case 3: // META_HISTORY_COMPLETE — all done!
             log("HISTORY COMPLETE! \(historyBuffer.count) total records across \(historyBatchCount) batches")
             historySyncTimer?.cancel(); historySyncTimer = nil
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: historyDrainedKey)
+            supabase.pushDebugLog(key: "history_drained", value: "trigger=\(trigger) batches=\(historyBatchCount) records=\(historyBuffer.count) nohr_acks=\(historyNoHRAcks)")
 
             DispatchQueue.main.async {
                 self.historySyncProgress = "Processing \(self.historyBuffer.count) records..."
@@ -5123,6 +5205,9 @@ extension BLEManager: CBPeripheralDelegate {
         // Log non-realtime packets for debugging history sync
         if isDownloadingHistory && packet.type != PacketType.realtimeData.rawValue {
             log("SYNC DATA: type=\(packet.type) cmd=\(packet.cmd) len=\(packet.data.count)")
+            if packet.type != PacketType.metadata.rawValue && packet.type != PacketType.commandResponse.rawValue {
+                historyBatchKinds[packet.type, default: 0] += 1
+            }
         }
 
         if packet.type == PacketType.realtimeData.rawValue {

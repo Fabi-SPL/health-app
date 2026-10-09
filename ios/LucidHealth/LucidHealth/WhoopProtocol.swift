@@ -36,6 +36,7 @@ enum WhoopCommand: UInt8 {
     case historyAck               = 23
     case eraseHistory             = 25   // 0x19 ERASE_HISTORY — wipes the strap's internal flash buffer (DESTRUCTIVE)
     case getBatteryLevel          = 26
+    case getDataRange             = 34   // read-only: the strap's history read/write pointers, capacity, oldest/newest unix
     case getHelloHarvard          = 35
     case startRawData             = 81   // Activate raw optical (PPG) stream → type-43
     case stopRawData              = 82
@@ -391,6 +392,11 @@ struct WhoopProtocol {
     /// ABORT_HISTORICAL_TRANSMITS (CMD 20). Ends an offload WITHOUT trimming the
     /// strap's flash. The RE doc's read-only recipe is: capture, never ack, abort.
     /// This is what a zero-record batch gets instead of an ack.
+    /// GET_DATA_RANGE (34). Read-only; the answer lands in whoop_events as unknown_cmd_response_34.
+    static func getDataRangePacket() -> Data {
+        buildPacket(type: .command, cmd: .getDataRange, data: Data([0x00]))
+    }
+
     static func abortHistoricalTransmitsPacket() -> Data {
         buildPacket(type: .command, cmd: .abortHistoricalTransmits, data: Data([0x00]))
     }
