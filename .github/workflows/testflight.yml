@@ -134,7 +134,7 @@ jobs:
           SB_EMAIL: ${{ secrets.EE_TASKS_EMAIL }}
           SB_PW: ${{ secrets.EE_TASKS_PASSWORD }}
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20             -X POST "$SB_URL/auth/v1/token?grant_type=password"             -H "apikey: $SB_KEY" -H "Content-Type: application/json"             -d "{\"email\":\"$SB_EMAIL\",\"password\":\"$SB_PW\"}")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20             -X POST "$SB_URL/auth/v1/token?grant_type=password"             -H "apikey: $SB_KEY" -H "Content-Type: application/json"             -d "{\"email\":\"$SB_EMAIL\",\"password\":\"$SB_PW\"}" || true)
           echo "auth gate: HTTP $STATUS"
           # Since 2026-10-08 the server's edge firewall only answers the home IP and the tailnet, so a
           # GitHub runner gets no answer at all (000). That says nothing about the login; a wrong login
