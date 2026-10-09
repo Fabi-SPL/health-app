@@ -136,6 +136,13 @@ jobs:
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20             -X POST "$SB_URL/auth/v1/token?grant_type=password"             -H "apikey: $SB_KEY" -H "Content-Type: application/json"             -d "{\"email\":\"$SB_EMAIL\",\"password\":\"$SB_PW\"}")
           echo "auth gate: HTTP $STATUS"
+          # Since 2026-10-08 the server's edge firewall only answers the home IP and the tailnet, so a
+          # GitHub runner gets no answer at all (000). That says nothing about the login; a wrong login
+          # answers 400. Only an actual refusal stops the build.
+          if [ "$STATUS" = "000" ]; then
+            echo "::warning::Server unreachable from this runner (edge firewall). Login not checked here."
+            exit 0
+          fi
           if [ "$STATUS" != "200" ]; then
             echo "ERROR: the credentials baked into this build cannot sign in (HTTP $STATUS)."
             echo "Refusing to ship a logged-out app. Fix EE_TASKS_EMAIL / EE_TASKS_PASSWORD / SUPABASE_ANON_KEY secrets."
