@@ -8,6 +8,6 @@ import Foundation
 enum BuildInfo {
     static let commitHash:       String = "local-dev"
     static let buildDate:        String = "unknown"
-    static let codeVersion:      String = "v116"
+    static let codeVersion:      String = "v117"
     static let migrationVersion: String = "v70"
 }

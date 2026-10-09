@@ -1726,6 +1726,44 @@ class SupabaseClient {
         }
     }
 
+    /// v117: raw v25 waveform records ("unix subsec hex" lines) for server-side heart rate (migration v203).
+    /// Records already on the server are ignored, so a retried file is harmless.
+    func pushHistRaw(lines: [String]) async -> (uploaded: Int, failed: Int) {
+        let rows: [[String: Any]] = lines.compactMap { line in
+            let p = line.split(separator: " ")
+            guard p.count == 3, let unix = Int(p[0]), let subsec = Int(p[1]) else { return nil }
+            return ["user_id": userId, "unix": unix, "subsec": subsec, "ver": 25, "hex": String(p[2])]
+        }
+        guard !rows.isEmpty else { return (0, 0) }
+        var uploaded = 0
+        do {
+            for start in stride(from: 0, to: rows.count, by: 500) {
+                try await ensureAuth()
+                guard let token = accessToken else { return (uploaded, rows.count - uploaded) }
+                let chunk = Array(rows[start..<min(start + 500, rows.count)])
+                var req = URLRequest(url: URL(string: "\(baseURL)/rest/v1/whoop_hist_raw?on_conflict=user_id,unix,subsec")!)
+                req.httpMethod = "POST"
+                req.timeoutInterval = 30
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.setValue(anonKey, forHTTPHeaderField: "apikey")
+                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                req.setValue("resolution=ignore-duplicates,return=minimal", forHTTPHeaderField: "Prefer")
+                req.httpBody = try JSONSerialization.data(withJSONObject: chunk)
+                let (data, resp) = try await session.data(for: req)
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                guard code < 300 else {
+                    log("Raw history chunk FAILED HTTP \(code): \(String(data: data, encoding: .utf8)?.prefix(120) ?? "?")")
+                    return (uploaded, rows.count - uploaded)
+                }
+                uploaded += chunk.count
+            }
+            return (uploaded, 0)
+        } catch {
+            log("Raw history push error: \(error.localizedDescription)")
+            return (uploaded, rows.count - uploaded)
+        }
+    }
+
     // MARK: - Fetch Health Baseline
 
     /// Fetch personal RHR/HRV baseline from health_metrics (last 14 good nights)

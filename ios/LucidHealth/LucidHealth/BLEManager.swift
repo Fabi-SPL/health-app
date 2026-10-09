@@ -225,6 +225,93 @@ class BLEManager: NSObject, ObservableObject {
         guard gen == pendingHistoryGen else { return }
         try? FileManager.default.removeItem(at: pendingHistoryURL)
     }
+
+    private var v25OutboxURL: URL {
+        pendingHistoryURL.deletingLastPathComponent().appendingPathComponent("history_v25_outbox.txt")
+    }
+
+    private static let hexDigits = Array("0123456789abcdef".utf8)
+
+    private func captureV25(_ d: Data) {
+        let s = d.startIndex
+        let unix = UInt32(d[s+4]) | (UInt32(d[s+5]) << 8) | (UInt32(d[s+6]) << 16) | (UInt32(d[s+7]) << 24)
+        let subsec = UInt16(d[s+8]) | (UInt16(d[s+9]) << 8)
+        var hex = [UInt8]()
+        hex.reserveCapacity(d.count * 2)
+        for b in d {
+            hex.append(Self.hexDigits[Int(b >> 4)])
+            hex.append(Self.hexDigits[Int(b & 0x0F)])
+        }
+        historyRawV25.append("\(unix) \(subsec) \(String(decoding: hex, as: UTF8.self))")
+        historyV25ThisChunk += 1
+    }
+
+    /// Appends captured waveform records to the outbox. Runs on bleQueue before every ack.
+    private func persistV25() {
+        guard !historyRawV25.isEmpty else { return }
+        let url = v25OutboxURL
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
+        guard size < 40_000_000 else {
+            supabase.pushDebugLog(key: "history_v25_outbox_full", value: "bytes=\(size) dropped=\(historyRawV25.count)")
+            historyRawV25.removeAll()
+            return
+        }
+        let chunk = Data((historyRawV25.joined(separator: "\n") + "\n").utf8)
+        historyRawV25.removeAll(keepingCapacity: true)
+        do {
+            if FileManager.default.fileExists(atPath: url.path) {
+                let h = try FileHandle(forWritingTo: url)
+                defer { try? h.close() }
+                try h.seekToEnd()
+                try h.write(contentsOf: chunk)
+            } else {
+                try chunk.write(to: url, options: .atomic)
+            }
+        } catch {
+            supabase.pushDebugLog(key: "history_v25_outbox_error", value: error.localizedDescription)
+        }
+    }
+
+    /// Moves the outbox aside and uploads every pending file; a file is deleted only once all of it landed.
+    private func uploadV25Outbox() {
+        persistV25()
+        guard !v25UploadInFlight else { return }
+        let fm = FileManager.default
+        let dir = v25OutboxURL.deletingLastPathComponent()
+        if fm.fileExists(atPath: v25OutboxURL.path) {
+            let aside = dir.appendingPathComponent("history_v25_upload_\(Int(Date().timeIntervalSince1970 * 1000)).txt")
+            try? fm.moveItem(at: v25OutboxURL, to: aside)
+        }
+        var files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("history_v25_upload_") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        if files.count > 300 {
+            for f in files.prefix(files.count - 300) { try? fm.removeItem(at: f) }
+            supabase.pushDebugLog(key: "history_v25_outbox_full", value: "files=\(files.count) dropped_oldest=\(files.count - 300)")
+            files = Array(files.suffix(300))
+        }
+        guard !files.isEmpty else { return }
+        v25UploadInFlight = true
+        let pending = files
+        Task { [weak self] in
+            guard let self else { return }
+            var uploaded = 0, failed = 0, done = 0
+            for f in pending {
+                guard let text = try? String(contentsOf: f, encoding: .utf8) else {
+                    try? FileManager.default.removeItem(at: f)
+                    continue
+                }
+                let r = await self.supabase.pushHistRaw(lines: text.split(separator: "\n").map(String.init))
+                uploaded += r.uploaded
+                failed += r.failed
+                guard r.failed == 0 else { break }
+                try? FileManager.default.removeItem(at: f)
+                done += 1
+            }
+            self.supabase.pushDebugLog(key: "history_v25_upload", value: "files=\(pending.count) done=\(done) uploaded=\(uploaded) failed=\(failed)")
+            self.bleQueue.async { self.v25UploadInFlight = false }
+        }
+    }
     var reSessionId: String = UUID().uuidString
     var debugPacketsThisSession: Int = 0
     let maxDebugPacketsPerSession: Int = 15000  // hard cap — prevents runaway volume
@@ -323,6 +410,12 @@ class BLEManager: NSObject, ObservableObject {
     // or off-wrist records has no heart rate but is still a page the strap wants acknowledged.
     private var historyBatchKinds: [UInt8: Int] = [:]
     private var historyNoHRAcks = 0
+    // v117: since 2026-09-21 the strap stores no heart-rate records, only v25 pulse-waveform records
+    // (24 samples at 25 Hz each) that the server turns into heart rate (migration v203). They go to an
+    // outbox file before every ack, so a page is never acked while its records exist only in memory.
+    private var historyRawV25: [String] = []
+    private var historyV25ThisChunk = 0
+    private var v25UploadInFlight = false
 
     // Standard BLE Device Information Service (0x180A)
     private let deviceInfoServiceUUID = CBUUID(string: "180A")
@@ -1691,6 +1784,7 @@ class BLEManager: NSObject, ObservableObject {
                 self.carriedHistory = self.loadPendingHistory()
                 self.historyBatchCount = 0
                 self.historyNoHRAcks = 0
+                self.historyV25ThisChunk = 0
                 self.gapStartTime = self.manualBackfillWindowStart
                 self.gapEndTime = self.manualBackfillWindowEnd
 
@@ -1745,6 +1839,7 @@ class BLEManager: NSObject, ObservableObject {
         carriedHistory = loadPendingHistory()
         historyBatchCount = 0
         historyNoHRAcks = 0
+        historyV25ThisChunk = 0
 
         DispatchQueue.main.async {
             self.connectionState = .syncing
@@ -1834,6 +1929,7 @@ class BLEManager: NSObject, ObservableObject {
         // while the upload async-runs in the background.
         bleQueue.async { self.startRealtimeStreaming() }
         finishHistoryWithDedup(trigger: trigger)
+        bleQueue.async { self.uploadV25Outbox() }
     }
 
     /// Shared finalizer for both auto-reconnect and manual-72h paths.
@@ -2069,6 +2165,12 @@ class BLEManager: NSObject, ObservableObject {
             )
         }
 
+        // v117: a v25 record has no heart-rate byte (byte 14 reads 1-7); it holds the pulse waveform.
+        if packet.seq == 25 && packet.data.count == 73 {
+            captureV25(packet.data)
+            return
+        }
+
         // Parse the record — we only need HR and RR values
         // Timestamps will be distributed evenly across the gap later
         if let reading = WhoopProtocol.parseHistoricalRecord(data: packet.data) {
@@ -2131,6 +2233,7 @@ class BLEManager: NSObject, ObservableObject {
             // ack_trim with running_total=0. A batch that delivered no records is
             // aborted instead (CMD 20, read-only), so nothing can be thrown away
             // that we never got.
+            persistV25()
             let deliveredThisBatch = historyBuffer.count - historyBatchStartTotal
             let packetsThisBatch = historyBatchKinds.values.reduce(0, +)
             let kinds = historyBatchKinds.sorted { $0.key < $1.key }.map { "t\($0.key):\($0.value)" }.joined(separator: ",")
@@ -2144,7 +2247,7 @@ class BLEManager: NSObject, ObservableObject {
             let sameEmptyTrim = emptyTrim != nil && (ud.object(forKey: "history_empty_abort_trim") as? Int) == emptyTrim
             let emptyAborts = sameEmptyTrim ? ud.integer(forKey: "history_empty_abort_count") + 1 : 1
             let alarmWindowOpen = !historyDrainAllowed(sleeping: false)
-            if alarmWindowOpen || historyBuffer.count >= historyChunkRecords {
+            if alarmWindowOpen || historyBuffer.count + historyV25ThisChunk >= historyChunkRecords {
                 // Chunk boundary, or the smart-alarm window opened: this batch is NOT acked, so the strap
                 // keeps it and re-serves it next time; what is buffered uploads now, live HR resumes, and the
                 // watchdog starts the next chunk once the upload has finished (after the window for an alarm).
