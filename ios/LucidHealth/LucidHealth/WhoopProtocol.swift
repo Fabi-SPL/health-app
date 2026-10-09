@@ -402,14 +402,17 @@ struct WhoopProtocol {
     }
 
     /// Acknowledge a history batch and request the next one
-    /// - Parameter trim: The trim value from the META_HISTORY_END metadata
-    static func historyAckPacket(trim: UInt32) -> Data {
+    /// - Parameter trim: The trim value from the META_HISTORY_END metadata ([10:14])
+    /// - Parameter wrap: the word after it ([14:18]). v116: echoed as received, like the official app's
+    ///   captured ACK and noop ("must be retained"); it was always sent as zero before.
+    static func historyAckPacket(trim: UInt32, wrap: UInt32 = 0) -> Data {
         var ackData = Data([0x01])
-        ackData.append(UInt8(trim & 0xFF))
-        ackData.append(UInt8((trim >> 8) & 0xFF))
-        ackData.append(UInt8((trim >> 16) & 0xFF))
-        ackData.append(UInt8((trim >> 24) & 0xFF))
-        ackData.append(contentsOf: [0x00, 0x00, 0x00, 0x00])
+        for v in [trim, wrap] {
+            ackData.append(UInt8(v & 0xFF))
+            ackData.append(UInt8((v >> 8) & 0xFF))
+            ackData.append(UInt8((v >> 16) & 0xFF))
+            ackData.append(UInt8((v >> 24) & 0xFF))
+        }
         return buildPacket(type: .command, cmd: .historyAck, data: ackData)
     }
 

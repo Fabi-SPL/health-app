@@ -1207,6 +1207,11 @@ class BLEManager: NSObject, ObservableObject {
     private let historyDrainedKey = "lucid_history_drained_at"
     private let historyDrainEvery: TimeInterval = 45 * 60
     private var lastDrainAttempt = Date.distantPast
+    // A drain is cut into chunks: the in-memory buffer and the pending file stay small, each chunk is
+    // uploaded before the next starts, and live HR runs between chunks.
+    private let historyChunkRecords = 3000
+    private var historyUploadInFlight = false
+    private var historyUploadFailedAt = Date.distantPast
 
     var historyDrainDue: Bool {
         let at = UserDefaults.standard.double(forKey: historyDrainedKey)
@@ -1226,16 +1231,23 @@ class BLEManager: NSObject, ObservableObject {
 
     /// Watchdog tick (bleQueue, every 30 s while streaming).
     private func considerHistoryDrain() {
-        guard !isDownloadingHistory, peripheral != nil, cmdToStrap != nil, historyDrainDue,
+        guard !isDownloadingHistory, !historyUploadInFlight, peripheral != nil, cmdToStrap != nil, historyDrainDue,
               Date().timeIntervalSince(lastDrainAttempt) > 10 * 60,
+              Date().timeIntervalSince(historyUploadFailedAt) > 15 * 60,
               Date().timeIntervalSince(lastDataReceived) < 60 else { return }
-        DispatchQueue.main.async { [weak self] in
+        lastDrainAttempt = Date()
+        Task { [weak self] in
             guard let self else { return }
-            let sleeping = self.healthEngine.sleepDetected
+            // Every ack trims the strap for good, so never drain while the server can't take the rows
+            // (away from home the edge firewall can hide it). The strap keeps them until it answers.
+            guard await self.supabase.fetchSyncCursor(before: Date()) != nil else {
+                self.supabase.pushDebugLog(key: "history_drain_skipped", value: "reason=server_unreachable")
+                return
+            }
+            let sleeping = await MainActor.run { self.healthEngine.sleepDetected }
             self.bleQueue.async {
-                guard !self.isDownloadingHistory, self.historyDrainAllowed(sleeping: sleeping),
+                guard !self.isDownloadingHistory, !self.historyUploadInFlight, self.historyDrainAllowed(sleeping: sleeping),
                       let p = self.peripheral, let c = self.cmdToStrap else { return }
-                self.lastDrainAttempt = Date()
                 let at = UserDefaults.standard.double(forKey: self.historyDrainedKey)
                 let mins = at > 0 ? Int((Date().timeIntervalSince1970 - at) / 60) : -1
                 self.supabase.pushDebugLog(key: "history_drain_start", value: "reason=periodic mins_since_drained=\(mins)")
@@ -1827,6 +1839,7 @@ class BLEManager: NSObject, ObservableObject {
     /// Shared finalizer for both auto-reconnect and manual-72h paths.
     /// Uses real strap timestamps + dedups against pre-fetched minute set.
     private func finishHistoryWithDedup(trigger: String) {
+        historyUploadInFlight = true
         let recordsFromStrap = carriedHistory + historyBuffer
         historyBuffer.removeAll()
         carriedHistory = []
@@ -1838,6 +1851,7 @@ class BLEManager: NSObject, ObservableObject {
 
         Task { [weak self] in
             guard let self else { return }
+            defer { self.bleQueue.async { self.historyUploadInFlight = false } }
 
             let nowUnix = Int(Date().timeIntervalSince1970)
             // The accept window is the strap's whole ring depth, NOT the gap window.
@@ -1996,7 +2010,7 @@ class BLEManager: NSObject, ObservableObject {
             }
 
             let result = await self.supabase.pushBackfillBatch(records: dedupedRecords)
-            if result.failed == 0 { self.clearPendingHistory(ifGen: pendingGen) }
+            if result.failed == 0 { self.clearPendingHistory(ifGen: pendingGen) } else { self.bleQueue.async { self.historyUploadFailedAt = Date() } }
             self.supabase.pushDebugLog(key: "history_sync_upload_result", value: "trigger=\(trigger) uploaded=\(result.uploaded) failed=\(result.failed)")
 
             // Replay successfully-uploaded readings through sleep detection so
@@ -2104,6 +2118,9 @@ class BLEManager: NSObject, ObservableObject {
             let trim10: UInt32? = d.count >= 14
                 ? (UInt32(d[s+10]) | (UInt32(d[s+11]) << 8) | (UInt32(d[s+12]) << 16) | (UInt32(d[s+13]) << 24))
                 : nil
+            let wrap10: UInt32 = trim10 != nil && d.count >= 18
+                ? (UInt32(d[s+14]) | (UInt32(d[s+15]) << 8) | (UInt32(d[s+16]) << 16) | (UInt32(d[s+17]) << 24))
+                : 0
             let t8str = trim8.map { "\($0)" } ?? "nil"
             let t10str = trim10.map { "\($0)" } ?? "nil"
             supabase.pushDebugLog(key: "history_meta_raw", value: "trigger=\(trigger) batch=\(historyBatchCount) len=\(d.count) hex=\(metaHex) trim_at8=\(t8str) trim_at10=\(t10str)")
@@ -2126,7 +2143,20 @@ class BLEManager: NSObject, ObservableObject {
             let ud = UserDefaults.standard
             let sameEmptyTrim = emptyTrim != nil && (ud.object(forKey: "history_empty_abort_trim") as? Int) == emptyTrim
             let emptyAborts = sameEmptyTrim ? ud.integer(forKey: "history_empty_abort_count") + 1 : 1
-            if deliveredThisBatch == 0 && packetsThisBatch > 0, let trim = trim10 ?? trim8 {
+            let alarmWindowOpen = !historyDrainAllowed(sleeping: false)
+            if alarmWindowOpen || historyBuffer.count >= historyChunkRecords {
+                // Chunk boundary, or the smart-alarm window opened: this batch is NOT acked, so the strap
+                // keeps it and re-serves it next time; what is buffered uploads now, live HR resumes, and the
+                // watchdog starts the next chunk once the upload has finished (after the window for an alarm).
+                let reason = alarmWindowOpen ? "alarm_window" : "chunk"
+                supabase.pushDebugLog(key: "history_chunk_pause", value: "trigger=\(trigger) reason=\(reason) batch=\(historyBatchCount) records=\(historyBuffer.count) trim=\(trim10 ?? trim8 ?? 0)")
+                if let p = peripheral, let c = cmdToStrap {
+                    p.writeValue(WhoopProtocol.abortHistoricalTransmitsPacket(), for: c, type: .withResponse)
+                }
+                if !alarmWindowOpen { lastDrainAttempt = .distantPast }
+                historySyncTimer?.cancel(); historySyncTimer = nil
+                finishHistoryDownload()
+            } else if deliveredThisBatch == 0 && packetsThisBatch > 0, let trim = trim10 ?? trim8 {
                 historyNoHRAcks += 1
                 if historyNoHRAcks <= 3 || historyNoHRAcks % 50 == 0 {
                     supabase.pushDebugLog(key: "history_nohr_batch_ack", value: "trigger=\(trigger) batch=\(historyBatchCount) trim=\(trim) kinds=\(kinds) nohr_acks=\(historyNoHRAcks)")
@@ -2136,7 +2166,7 @@ class BLEManager: NSObject, ObservableObject {
                 StrapWatchdog.shared.historyAlive()
                 armHistorySyncTimeout(trigger: trigger)
                 if let p = peripheral, let c = cmdToStrap {
-                    p.writeValue(WhoopProtocol.historyAckPacket(trim: trim), for: c, type: .withResponse)
+                    p.writeValue(WhoopProtocol.historyAckPacket(trim: trim, wrap: wrap10), for: c, type: .withResponse)
                 }
             } else if deliveredThisBatch == 0 && historyBuffer.isEmpty, let wedged = trim10 ?? trim8, emptyAborts >= 3 {
                 log("History batch \(historyBatchCount) EMPTY at trim \(wedged) for the \(emptyAborts)th time — acking to unwedge")
@@ -2144,7 +2174,7 @@ class BLEManager: NSObject, ObservableObject {
                 ud.removeObject(forKey: "history_empty_abort_trim")
                 ud.removeObject(forKey: "history_empty_abort_count")
                 if let p = peripheral, let c = cmdToStrap {
-                    p.writeValue(WhoopProtocol.historyAckPacket(trim: wedged), for: c, type: .withResponse)
+                    p.writeValue(WhoopProtocol.historyAckPacket(trim: wedged, wrap: wrap10), for: c, type: .withResponse)
                 }
             } else if deliveredThisBatch == 0 && historyBuffer.isEmpty {
                 ud.set(emptyTrim, forKey: "history_empty_abort_trim")
@@ -2162,7 +2192,7 @@ class BLEManager: NSObject, ObservableObject {
                 ud.removeObject(forKey: "history_empty_abort_count")
                 savePendingHistory(carriedHistory + historyBuffer)
                 if let p = peripheral, let c = cmdToStrap {
-                    p.writeValue(WhoopProtocol.historyAckPacket(trim: trim), for: c, type: .withResponse)
+                    p.writeValue(WhoopProtocol.historyAckPacket(trim: trim, wrap: wrap10), for: c, type: .withResponse)
                 }
             } else {
                 log("History batch end — couldn't parse metadata (len=\(d.count))")
