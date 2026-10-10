@@ -473,6 +473,7 @@ class BLEManager: NSObject, ObservableObject {
 
     // MARK: - Strap Clock Offset (used for getClock response display)
     private var strapClockOffset: Int64 = 0
+    private var clockReadsThisConnection = 0
 
     // MARK: - Scan mode
     private var useServiceFilter = false
@@ -1391,10 +1392,20 @@ class BLEManager: NSObject, ObservableObject {
             p.writeValue(WhoopProtocol.clockPacket(), for: c, type: .withResponse)
         }
 
+        // v118: a strap that ran flat comes back with its clock at 1971 and stores nothing to flash
+        // until the clock is set, so set it on every connect and read it back once for the log.
+        clockReadsThisConnection = 0
         bleQueue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
             self.log("Step 3: Syncing strap clock to real time...")
-            p.writeValue(WhoopProtocol.setClockPacket(), for: c, type: .withResponse)
+            for pkt in WhoopProtocol.setClockPackets() {
+                p.writeValue(pkt, for: c, type: .withResponse)
+            }
+        }
+
+        bleQueue.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self, let p = self.peripheral, let c = self.cmdToStrap else { return }
+            p.writeValue(WhoopProtocol.clockPacket(), for: c, type: .withResponse)
         }
 
         bleQueue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
@@ -3664,6 +3675,13 @@ extension BLEManager: CBPeripheralDelegate {
                 strapClockOffset = offset
                 let offsetDays = offset / 86400
                 log("Clock: \(fmt.string(from: date)) (offset: \(offsetDays) days behind)")
+                clockReadsThisConnection += 1
+                if clockReadsThisConnection <= 2 {
+                    supabase.pushDebugLog(
+                        key: "strap_clock",
+                        value: "read=\(clockReadsThisConnection == 1 ? "before_set" : "after_set") strap_unix=\(Int(date.timeIntervalSince1970)) offset_s=\(offset)"
+                    )
+                }
             }
         } else if cmd == WhoopCommand.getHelloHarvard.rawValue && packet.data.count > 116 {
             let d = packet.data
@@ -5149,6 +5167,7 @@ extension BLEManager: CBPeripheralDelegate {
     /// Push notification at 20% battery so Fabi can charge before bed (prevents overnight data gaps)
     private func sendLowBatteryNotification(_ level: Double) {
         log("WHOOP battery at \(String(format: "%.0f", level))% — sending low battery push")
+        supabase.pushDebugLog(key: "battery_low_notified", value: "level=\(Int(level))")
         let content = UNMutableNotificationContent()
         content.title = "\u{1FAAB} Whoop Battery Low"
         content.body = String(format: "%.0f%% remaining — charge before bed to keep overnight data flowing.", level)

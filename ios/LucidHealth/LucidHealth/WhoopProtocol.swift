@@ -326,15 +326,16 @@ struct WhoopProtocol {
     }
 
     /// Set the strap's clock to the current real time
-    static func setClockPacket() -> Data {
-        let now = UInt32(Date().timeIntervalSince1970)
-        let timeData = Data([
-            UInt8(now & 0xFF),
-            UInt8((now >> 8) & 0xFF),
-            UInt8((now >> 16) & 0xFF),
-            UInt8((now >> 24) & 0xFF)
-        ])
-        return buildPacket(type: .command, cmd: .getClock, data: timeData)
+    /// SET_CLOCK (10). v118: this used to go out as GET_CLOCK (11), so the strap's clock was never set.
+    /// Firmware 41.17.x latches only the 9-byte form [unix u32 LE][5 zero]; newer firmware only the
+    /// 8-byte form [unix u32 LE][subsec u32 LE]. Send both with the same time (ryanbr/noop #120).
+    static func setClockPackets(now: Date = Date()) -> [Data] {
+        let t = UInt32(now.timeIntervalSince1970)
+        let secs: [UInt8] = [UInt8(t & 0xFF), UInt8((t >> 8) & 0xFF), UInt8((t >> 16) & 0xFF), UInt8((t >> 24) & 0xFF)]
+        return [
+            buildPacket(type: .command, cmd: .setClock, data: Data(secs + [0, 0, 0, 0])),
+            buildPacket(type: .command, cmd: .setClock, data: Data(secs + [0, 0, 0, 0, 0]))
+        ]
     }
 
     // MARK: - Haptics
