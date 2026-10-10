@@ -1,0 +1,1 @@
+-- v204 rollback: re-run supabase-migration-v201-outage-open-gap.sql to restore classify_strap_gap.
