@@ -1825,7 +1825,7 @@ class SupabaseClient {
             let today = fmt.string(from: Date())
 
             // Try today first, fall back to most recent
-            let todayURL = URL(string: "\(baseURL)/rest/v1/health_metrics?user_id=eq.\(userId)&metric_date=eq.\(today)&select=recovery_score,strain_score,sleep_hours,sleep_score,sleep_efficiency_pct,deep_sleep_min,rem_sleep_min,light_sleep_min,awake_min,body_battery,hrv_avg,resting_hr,respiratory_rate,cognitive_capacity_score,cognitive_label,illness_risk,training_monotony,training_strain,acwr,sleep_start,sleep_end,sdnn_avg,pnn50_avg,dfa_alpha1_avg,skin_temp,poincare_sd1,poincare_sd2,nocturnal_hr_dip,sleep_fragmentation,sleep_debt_hours,vo2max_estimate,alcohol_impact,readiness_score,strain_physical,strain_stress,strain_autonomic")!
+            let todayURL = URL(string: "\(baseURL)/rest/v1/health_metrics?user_id=eq.\(userId)&metric_date=eq.\(today)&select=recovery_score,strain_score,sleep_hours,sleep_score,sleep_efficiency_pct,deep_sleep_min,rem_sleep_min,light_sleep_min,awake_min,body_battery,hrv_avg,resting_hr,respiratory_rate,cognitive_capacity_score,cognitive_label,illness_risk,training_monotony,training_strain,acwr,sleep_start,sleep_end,sdnn_avg,pnn50_avg,dfa_alpha1_avg,skin_temp,poincare_sd1,poincare_sd2,nocturnal_hr_dip,sleep_fragmentation,sleep_debt_hours,vo2max_estimate,alcohol_impact,readiness_score,strain_physical,strain_stress,strain_autonomic,night_data")!
             var todayReq = URLRequest(url: todayURL)
             todayReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
             todayReq.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -1839,7 +1839,7 @@ class SupabaseClient {
             }
 
             // Fall back to most recent day with scores
-            let url = URL(string: "\(baseURL)/rest/v1/health_metrics?user_id=eq.\(userId)&hrv_avg=gt.0&order=metric_date.desc&limit=1&select=recovery_score,strain_score,sleep_hours,sleep_score,sleep_efficiency_pct,deep_sleep_min,rem_sleep_min,light_sleep_min,awake_min,body_battery,hrv_avg,resting_hr,respiratory_rate,cognitive_capacity_score,cognitive_label,illness_risk,training_monotony,training_strain,acwr,sleep_start,sleep_end,sdnn_avg,pnn50_avg,dfa_alpha1_avg,skin_temp,poincare_sd1,poincare_sd2,nocturnal_hr_dip,sleep_fragmentation,sleep_debt_hours,vo2max_estimate,alcohol_impact,readiness_score,strain_physical,strain_stress,strain_autonomic")!
+            let url = URL(string: "\(baseURL)/rest/v1/health_metrics?user_id=eq.\(userId)&hrv_avg=gt.0&order=metric_date.desc&limit=1&select=recovery_score,strain_score,sleep_hours,sleep_score,sleep_efficiency_pct,deep_sleep_min,rem_sleep_min,light_sleep_min,awake_min,body_battery,hrv_avg,resting_hr,respiratory_rate,cognitive_capacity_score,cognitive_label,illness_risk,training_monotony,training_strain,acwr,sleep_start,sleep_end,sdnn_avg,pnn50_avg,dfa_alpha1_avg,skin_temp,poincare_sd1,poincare_sd2,nocturnal_hr_dip,sleep_fragmentation,sleep_debt_hours,vo2max_estimate,alcohol_impact,readiness_score,strain_physical,strain_stress,strain_autonomic,night_data")!
             var request = URLRequest(url: url)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -1867,6 +1867,11 @@ class SupabaseClient {
         // Marks the row as another day's, so the caller can use it for baselines
         // without painting it on as today's scores.
         if label == "fallback" { result["is_fallback"] = 1 }
+        // The server's night label: a gap night is a tracking error, never a night without sleep.
+        if let nd = row["night_data"] as? String {
+            if nd == "technical_gap" { result["night_gap"] = 1 }
+            if nd == "no_sleep_found" { result["night_no_sleep"] = 1 }
+        }
         // Core scores
         if let r = row["recovery_score"] as? Double { result["recovery"] = r }
         if let s = row["strain_score"] as? Double { result["strain"] = s }

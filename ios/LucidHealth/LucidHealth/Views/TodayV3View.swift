@@ -853,11 +853,18 @@ extension TodayV3Screen {
                         stageItem("Awake", "awake_min", V3.awake)
                     }
                 } else {
-                    V3EmptyLine(text: "No sleep recorded for last night")
+                    V3EmptyLine(text: lastNightEmptyText)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    var lastNightEmptyText: String {
+        let n = store.night
+        if n.loaded && n.isTechnicalGap { return "No data last night. Tracking error." }
+        if n.loaded && n.noSleepFound { return "No sleep found last night" }
+        return "Last night is not synced yet"
     }
 
     @ViewBuilder

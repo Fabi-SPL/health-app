@@ -414,7 +414,8 @@ private extension HealthV3View {
             V3Bar(fraction: min(1, (hours ?? 0) / need), color: V3.sleep, height: 8)
                 .padding(.top, 8)
             HStack {
-                Text(pct.map { "\($0)% of your 8h need" } ?? "").font(V3Font.text(12)).foregroundStyle(V3.t2)
+                Text(pct.map { "\($0)% of your 8h need" } ?? (n.isTechnicalGap ? "No data last night. Tracking error." : ""))
+                    .font(V3Font.text(12)).foregroundStyle(V3.t2)
                 Spacer(minLength: 8)
                 Text(range).font(V3Font.text(12)).foregroundStyle(V3.t2).monospacedDigit()
             }
@@ -461,12 +462,32 @@ private extension HealthV3View {
         }
     }
 
+    /// The last 7 calendar nights. A night without sleep data stays in its slot as "no data" instead of vanishing.
+    var weekSlots: [(id: String, hours: Double?)] {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Europe/Berlin")!
+        let f = DateFormatter()
+        f.calendar = cal
+        f.timeZone = cal.timeZone
+        f.dateFormat = "yyyy-MM-dd"
+        let byDay = Dictionary(store.nights.map { ($0.id, $0.hours) }, uniquingKeysWith: { a, _ in a })
+        let now = Date()
+        let todayIn = byDay[f.string(from: now)] != nil || store.night.isTechnicalGap
+        let first = todayIn ? 6 : 7
+        let last = todayIn ? 0 : 1
+        return stride(from: first, through: last, by: -1).compactMap { (back: Int) -> (id: String, hours: Double?)? in
+            guard let d = cal.date(byAdding: .day, value: -back, to: now) else { return nil }
+            let id = f.string(from: d)
+            return (id: id, hours: byDay[id])
+        }
+    }
+
     var weekCard: some View {
-        let week = Array(store.nights.suffix(7))
-        let avg = healthMean(week.map { $0.hours })
+        let week = weekSlots
+        let avg = healthMean(week.compactMap { $0.hours })
         return V3Card {
             V3CardHeader(title: "Last 7 nights", trailing: avg.map { "avg " + V3Format.duration(hours: $0) })
-            if week.count >= 2 {
+            if store.loaded, week.contains(where: { $0.hours != nil }) {
                 HealthWeekBars(values: week.map { $0.hours },
                                labels: week.map { String(BoardFormat.weekdayShort($0.id).prefix(1)) },
                                need: need)
@@ -1433,7 +1454,7 @@ private struct HealthHRCurve: View {
 }
 
 private struct HealthWeekBars: View {
-    let values: [Double]
+    let values: [Double?]
     let labels: [String]
     let need: Double
 
@@ -1445,18 +1466,26 @@ private struct HealthWeekBars: View {
     }
 
     var body: some View {
-        let hi = max(need, values.max() ?? need) + 0.5
+        let hi = max(need, values.compactMap { $0 }.max() ?? need) + 0.5
         VStack(spacing: 8) {
             ZStack(alignment: .bottom) {
                 HStack(alignment: .bottom, spacing: 8) {
                     ForEach(Array(values.enumerated()), id: \.offset) { i, v in
                         VStack(spacing: 4) {
                             Spacer(minLength: 0)
-                            Text(clock(v)).font(V3Font.num(11, .semibold)).foregroundStyle(V3.t2)
-                                .lineLimit(1).minimumScaleFactor(0.7)
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(i == values.count - 1 ? V3.sleep : V3.sleep.opacity(0.55))
-                                .frame(height: max(chartH * CGFloat(v / hi), 3))
+                            if let v {
+                                Text(clock(v)).font(V3Font.num(11, .semibold)).foregroundStyle(V3.t2)
+                                    .lineLimit(1).minimumScaleFactor(0.7)
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(i == values.count - 1 ? V3.sleep : V3.sleep.opacity(0.55))
+                                    .frame(height: max(chartH * CGFloat(v / hi), 3))
+                            } else {
+                                Text("no data").font(V3Font.text(10, .semibold)).foregroundStyle(V3.t3)
+                                    .lineLimit(1).minimumScaleFactor(0.6)
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(V3.t3, style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+                                    .frame(height: chartH * CGFloat(need / hi))
+                            }
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: chartH + 18)
