@@ -192,6 +192,9 @@ struct BoardNight {
 
     var loaded: Bool { !scores.isEmpty }
     var isFallback: Bool { (scores["is_fallback"] ?? 0) > 0 }
+    /// Last night's strap or phone data is missing: shown as "No data", never as no sleep.
+    var isTechnicalGap: Bool { !isFallback && (scores["night_gap"] ?? 0) > 0 }
+    var noSleepFound: Bool { !isFallback && (scores["night_no_sleep"] ?? 0) > 0 }
 
     func positive(_ key: String) -> Double? {
         guard let v = scores[key], v > 0 else { return nil }
