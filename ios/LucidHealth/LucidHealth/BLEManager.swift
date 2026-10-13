@@ -701,8 +701,7 @@ class BLEManager: NSObject, ObservableObject {
         healthEngine.onWakeUpDetected { [weak self] in
             guard let self = self else { return }
             self.log("WAKE-UP DETECTED — notifying Lucid for morning briefing")
-            // Gentle buzz to confirm wake-up detected
-            self.runHapticPattern(0)
+            // No buzz here: he is already awake, and a buzz 20 min after waking reads as the alarm going off.
             // Notify Supabase so the health engine can compute morning briefing
             self.supabase.notifyWakeUp { success in
                 self.log("Wake-up notification to Lucid: \(success ? "OK" : "FAILED")")
@@ -4860,6 +4859,12 @@ extension BLEManager: CBPeripheralDelegate {
     func stopAlarmIfRinging(reason: String) {
         guard isAlarmRinging else { return }
         stopAlarm(reason: reason)
+    }
+
+    /// "I'm awake": the server reads manual_wake_up / alarm_stopped and closes the night, a set latest time included.
+    func imAwake() {
+        healthEngine.manualWakeUp()
+        stopAlarm(reason: "im_awake")
     }
 
     /// The progressive strap-buzz + haptic wake ramp — extracted verbatim from

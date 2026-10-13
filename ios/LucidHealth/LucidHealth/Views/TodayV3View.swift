@@ -28,6 +28,7 @@ private struct TodayV3Screen: View {
     @ObservedObject private var store = BoardStore.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("lucid_goback_handled_date") private var handledDate: String = ""
+    @AppStorage("lucid_awake_tap_date") private var awakeTapDate: String = ""
 
     @State private var now = Date()
     @State private var page = 0
@@ -54,6 +55,7 @@ private struct TodayV3Screen: View {
             ScrollView {
                 VStack(spacing: 12) {
                     header
+                    awakeRow
                     content
                 }
                 .padding(.horizontal, 16)
@@ -291,6 +293,23 @@ extension TodayV3Screen {
             }
             V3StrapPill()
             V3KeledButton()
+        }
+    }
+
+    /// Mornings until noon: one tap ends the night on the server, so no alarm rings after it.
+    @ViewBuilder
+    var awakeRow: some View {
+        if hour >= 4, hour < 12, mode != .early {
+            if awakeTapDate == todayKey {
+                Text("Alarm off for this morning")
+                    .font(V3Font.text(13))
+                    .foregroundStyle(V3.t2)
+            } else {
+                V3Button(title: "I'm awake", symbol: "sun.max.fill") {
+                    ble.imAwake()
+                    awakeTapDate = todayKey
+                }
+            }
         }
     }
 
@@ -564,6 +583,8 @@ extension TodayV3Screen {
                     .multilineTextAlignment(.center)
                     .padding(.bottom, 4)
                 V3Button(title: "Get up now", symbol: "sun.max", secondary: true) {
+                    ble.imAwake()
+                    awakeTapDate = todayKey
                     handledDate = todayKey
                 }
             }
