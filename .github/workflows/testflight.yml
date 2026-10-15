@@ -15,6 +15,11 @@ on:
       - '.github/workflows/testflight.yml'
       - 'scripts/asc.mjs'
   workflow_dispatch:
+    inputs:
+      upload:
+        description: Upload to TestFlight (off = prove signing only)
+        type: boolean
+        default: true
 
 jobs:
   testflight:
@@ -166,29 +171,31 @@ jobs:
           sed -i '' "s|__TEAM_ID__|${APPLE_TEAM_ID}|" ios/LucidHealth/ExportOptions.plist
           cat ios/LucidHealth/ExportOptions.plist
 
-      # -allowProvisioningUpdates lets Xcode create the App IDs and signing
-      # certificates on the portal by itself, using the API key. It does NOT
-      # create the App Group - that one identifier has to exist already or the
-      # widget target fails to sign.
-      # Every ephemeral runner mints a fresh "Created via API" development
-      # certificate during automatic signing and can never reuse it (the private
-      # key dies with the runner). At ~12 of them Apple refuses to issue more
-      # and the archive fails with "choose a certificate to revoke". Prune them
-      # all up front - this run makes its own new one seconds later.
-      - name: Prune stale CI development certificates
+      # One stored Apple Development certificate (DEV_P12_* secrets) in a throwaway
+      # keychain. Automatic signing finds it and never mints a new one, so nothing
+      # is revoked and Apple sends no "certificate revoked" mail. Never add a step
+      # that deletes certificates: it revokes this one and the mails come back.
+      - name: Install the stored development certificate
         if: steps.guard.outputs.ready == 'true'
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          DEV_P12_BASE64: ${{ secrets.DEV_P12_BASE64 }}
+          DEV_P12_PASSWORD: ${{ secrets.DEV_P12_PASSWORD }}
         run: |
-          export ASC_KEY_PATH="$RUNNER_TEMP/AuthKey_prune.p8"
-          printf '%s' "$ASC_KEY_P8" > "$ASC_KEY_PATH"
-          node scripts/asc.mjs raw GET "/v1/certificates?limit=50&fields[certificates]=certificateType,displayName"             | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const c of JSON.parse(s).data)if(c.attributes.certificateType==="DEVELOPMENT"&&c.attributes.displayName==="Created via API")console.log(c.id)})'             | while read -r ID; do
-                echo "revoking stale CI cert $ID"
-                node scripts/asc.mjs raw DELETE "/v1/certificates/$ID" >/dev/null || true
-              done
-          rm -f "$ASC_KEY_PATH"
+          [ -n "$DEV_P12_BASE64" ] || { echo "::error::DEV_P12_BASE64 secret missing"; exit 1; }
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KP=$(openssl rand -hex 16)
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          printf '%s' "$DEV_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/dev.p12"
+          security import "$RUNNER_TEMP/dev.p12" -P "$DEV_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          rm -f "$RUNNER_TEMP/dev.p12"
+          curl -fsSL -o "$RUNNER_TEMP/wwdr.cer" https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer
+          security import "$RUNNER_TEMP/wwdr.cer" -k "$KC" || true
+          security set-key-partition-list -S apple-tool:,apple: -k "$KP" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KC" | grep -q "Apple Development" \
+            || { echo "::error::development identity did not import"; security find-identity -v "$KC"; exit 1; }
 
       - name: Archive (signed, automatic provisioning)
         if: steps.guard.outputs.ready == 'true'
@@ -250,7 +257,7 @@ jobs:
           ls -la $RUNNER_TEMP/export
 
       - name: Upload to TestFlight
-        if: steps.guard.outputs.ready == 'true'
+        if: steps.guard.outputs.ready == 'true' && (github.event_name != 'workflow_dispatch' || inputs.upload)
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
