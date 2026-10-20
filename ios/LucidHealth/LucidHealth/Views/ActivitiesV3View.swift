@@ -877,7 +877,7 @@ enum ActivityMock {
 
     static var active: Bool {
         switch LucidScreen.current {
-        case .activities, .activityRoute, .activityIndoor, .workoutStart: return true
+        case .activities, .activityRoute, .activityRouteLow, .activityIndoor, .workoutStart: return true
         default: return false
         }
     }
