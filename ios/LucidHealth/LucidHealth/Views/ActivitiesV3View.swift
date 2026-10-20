@@ -723,13 +723,14 @@ private struct ActivityRouteMap: View {
                 .stroke(V3.strain, lineWidth: 4)
             if let a = coords.first {
                 Annotation("Start", coordinate: a) { Self.dot(V3.green) }
+                    .annotationTitles(.hidden)
             }
             if let z = coords.last {
                 Annotation("Finish", coordinate: z) { Self.dot(V3.red) }
+                    .annotationTitles(.hidden)
             }
         }
         .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-        .annotationTitles(.hidden)
     }
 
     private static func dot(_ c: Color) -> some View {
