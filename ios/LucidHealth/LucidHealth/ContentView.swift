@@ -4,7 +4,7 @@ struct ContentView: View {
     @EnvironmentObject var bleManager: BLEManager
     @AppStorage(V3Appearance.key) private var appearanceRaw: String = V3Appearance.system.rawValue
 
-    init() { LucidScreen.installGuard() }
+    init() { LucidScreen.installGuard(); UIPublishGate.install() }
 
     var body: some View {
         RootTabView()

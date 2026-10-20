@@ -14,6 +14,8 @@ struct StrainV3View: View {
     @State private var openSession: SupabaseClient.WorkoutSession? = nil
     @State private var workoutNote: String? = nil
     @State private var starting = false
+    @State private var startKey: String? = nil
+    @State private var showStartSheet = false
     @Environment(\.scenePhase) private var scenePhase
 
     private static let modes: [String] = ["Rings", "River"]
@@ -65,6 +67,13 @@ struct StrainV3View: View {
                 onSaved: { Task { await reload() } },
                 onDeleted: {}
             )
+        }
+        .sheet(isPresented: $showStartSheet) {
+            WorkoutStartSheet(types: model.workoutTypes, initialKey: startKey) { (s: SupabaseClient.WorkoutSession) in
+                showStartSheet = false
+                openSession = s
+                liveSession = s
+            }
         }
         .fullScreenCover(item: $liveSession, onDismiss: { Task { await refreshWorkouts() } }) { (s: SupabaseClient.WorkoutSession) in
             LiveRideV3View(session: s) { liveSession = nil }
@@ -231,17 +240,9 @@ struct StrainV3View: View {
             return
         }
         workoutNote = nil
-        starting = true
-        Task {
-            let s = await SupabaseClient.shared.workoutStart(type: t.id)
-            starting = false
-            if let s = s {
-                openSession = s
-                liveSession = s
-            } else {
-                workoutNote = "Could not start the workout. Check the connection."
-            }
-        }
+        // the sheet carries the indoor / outside choice and does the start
+        startKey = t.id
+        showStartSheet = true
     }
 }
 

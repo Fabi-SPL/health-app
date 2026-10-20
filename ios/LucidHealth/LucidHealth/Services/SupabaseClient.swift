@@ -4163,6 +4163,10 @@ extension SupabaseClient {
         let category: String
         let tracksDistance: Bool
         let tracksLoad: Bool
+        /// indoor | outdoor. Older servers have no column, so the key decides.
+        var defaultEnvironment: String = "indoor"
+
+        var isOutdoorByDefault: Bool { defaultEnvironment == "outdoor" }
     }
 
     struct WorkoutSession: Identifiable {
@@ -4208,8 +4212,65 @@ extension SupabaseClient {
         let kcal: Int
         let kcalSource: String
         let kmh: Double?
+        var typeKey: String = ""
+        var environment: String? = nil
+        var distanceSource: String? = nil
+        var steps: Int? = nil
+        var kcalActive: Int? = nil
+        var kcalMethod: String? = nil
+        var detectedStart: Date? = nil
+        var detectedEnd: Date? = nil
+        var hasRoute: Bool = false
 
         var minutes: Int { max(1, durationSec / 60) }
+        var isOutdoor: Bool { environment == "outdoor" }
+    }
+
+    struct WorkoutHRPoint: Identifiable {
+        let t: Date
+        let hr: Int
+        var id: TimeInterval { t.timeIntervalSince1970 }
+    }
+
+    struct WorkoutDetail: Identifiable {
+        let id: String
+        let typeKey: String
+        let label: String
+        let emoji: String
+        let environment: String
+        let startedAt: Date
+        let endedAt: Date?
+        let loggedStart: Date?
+        let loggedEnd: Date?
+        let detectedStart: Date?
+        let detectedEnd: Date?
+        let timesMoved: Bool
+        let durationSec: Int
+        let distanceKm: Double?
+        let distanceSource: String?
+        let paceMinPerKm: Double?
+        let kmh: Double?
+        let steps: Int?
+        let elevationGainM: Double?
+        let hrAvg: Int?
+        let hrPeak: Int?
+        let zonesMin: [Int]
+        let hrSeries: [WorkoutHRPoint]
+        let kcal: Int
+        let kcalActive: Int?
+        let kcalMethod: String?
+        let hasRoute: Bool
+        /// [lat, lon] pairs, thinned by the server.
+        let route: [[Double]]
+
+        var isOutdoor: Bool { environment == "outdoor" }
+    }
+
+    struct WorkoutTrackResult {
+        let distanceKm: Double?
+        let distanceSource: String?
+        let elevationGainM: Double?
+        let steps: Int?
     }
 
     struct IntakeBacksolve {
@@ -4283,13 +4344,15 @@ extension SupabaseClient {
             let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
             return rows.compactMap { r -> WorkoutType? in
                 guard let key = r["key"] as? String else { return nil }
+                let fallbackEnv: String = ["walk", "run", "bike_outdoor"].contains(key) ? "outdoor" : "indoor"
                 return WorkoutType(
                     id: key,
                     label: r["label"] as? String ?? key,
                     emoji: r["emoji"] as? String ?? "\u{1F4AA}",
                     category: r["category"] as? String ?? "cardio",
                     tracksDistance: r["tracks_distance"] as? Bool ?? false,
-                    tracksLoad: r["tracks_load"] as? Bool ?? false
+                    tracksLoad: r["tracks_load"] as? Bool ?? false,
+                    defaultEnvironment: r["default_environment"] as? String ?? fallbackEnv
                 )
             }
         } catch {
@@ -4318,6 +4381,17 @@ extension SupabaseClient {
             if let first = rows.first { return workoutSession(from: first) }
             return nil
         } catch { return nil }
+    }
+
+    enum WorkoutOpenCheck { case none, open(WorkoutSession), unknown }
+
+    /// Like workoutOpen, but tells "nothing open" apart from "could not ask".
+    func workoutOpenChecked() async -> WorkoutOpenCheck {
+        do {
+            let rows = try await rpcRows("workout_open", ["p_user_id": userId])
+            if let first = rows.first, let s = workoutSession(from: first) { return .open(s) }
+            return .none
+        } catch { return .unknown }
     }
 
     func workoutLive(id: String) async -> WorkoutLive? {
@@ -4380,13 +4454,139 @@ extension SupabaseClient {
                     hrAvg: wInt(r, "hr_avg"),
                     kcal: wInt(r, "kcal") ?? 0,
                     kcalSource: r["kcal_source"] as? String ?? "",
-                    kmh: wNum(r, "kmh")
+                    kmh: wNum(r, "kmh"),
+                    typeKey: r["type_key"] as? String ?? "",
+                    environment: r["environment"] as? String,
+                    distanceSource: r["distance_source"] as? String,
+                    steps: wInt(r, "steps"),
+                    kcalActive: wInt(r, "kcal_active"),
+                    kcalMethod: r["kcal_method"] as? String,
+                    detectedStart: wDate(r, "detected_start"),
+                    detectedEnd: wDate(r, "detected_end"),
+                    hasRoute: r["has_route"] as? Bool ?? false
                 )
             }
         } catch {
             log("workout_recent failed: \(error.localizedDescription)")
             return []
         }
+    }
+
+    // MARK: Indoor / outside, route, steps (v223)
+    // Every call fails soft: an older server answers 404 and the app carries on.
+
+    @discardableResult
+    func workoutSetEnvironment(id: String, environment: String) async -> Bool {
+        do {
+            _ = try await rpcRows("workout_set_environment", ["p_id": id, "p_environment": environment])
+            return true
+        } catch {
+            log("workout_set_environment failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// points: [t_epoch, lat, lon, altitude_m, horizontal_accuracy_m, speed_mps]. Callable after finish.
+    func workoutAttachTrack(id: String, points: [[Any]], steps: Int?, pedometerKm: Double?) async -> WorkoutTrackResult? {
+        var body: [String: Any] = ["p_id": id, "p_points": points]
+        if let steps { body["p_steps"] = steps }
+        if let pedometerKm { body["p_pedometer_km"] = (pedometerKm * 1000).rounded() / 1000 }
+        do {
+            let rows = try await rpcRows("workout_attach_track", body)
+            guard let r = rows.first else { return WorkoutTrackResult(distanceKm: nil, distanceSource: nil, elevationGainM: nil, steps: steps) }
+            return WorkoutTrackResult(
+                distanceKm: wNum(r, "distance_km"),
+                distanceSource: r["distance_source"] as? String,
+                elevationGainM: wNum(r, "elevation_gain_m"),
+                steps: wInt(r, "steps")
+            )
+        } catch {
+            log("workout_attach_track failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    func workoutDetail(id: String) async -> WorkoutDetail? {
+        do { return (try await rpcRows("workout_detail", ["p_id": id])).first.flatMap(workoutDetail(from:)) }
+        catch { log("workout_detail failed: \(error.localizedDescription)"); return nil }
+    }
+
+    func workoutApplyDetected(id: String) async -> WorkoutDetail? {
+        do { return (try await rpcRows("workout_apply_detected", ["p_id": id])).first.flatMap(workoutDetail(from:)) }
+        catch { log("workout_apply_detected failed: \(error.localizedDescription)"); return nil }
+    }
+
+    func workoutRevertLogged(id: String) async -> WorkoutDetail? {
+        do { return (try await rpcRows("workout_revert_logged", ["p_id": id])).first.flatMap(workoutDetail(from:)) }
+        catch { log("workout_revert_logged failed: \(error.localizedDescription)"); return nil }
+    }
+
+    @discardableResult
+    func workoutDeleteRoute(id: String) async -> Bool {
+        do {
+            _ = try await rpcRows("workout_delete_route", ["p_id": id])
+            return true
+        } catch {
+            log("workout_delete_route failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Resting and max HR behind the server's Karvonen zones, so the chart colours match zones_min.
+    func workoutHRRef() async -> (rest: Double, max: Double)? {
+        do {
+            guard let r = try await rpcRows("workout_hr_ref", ["p_user_id": userId]).first,
+                  let rest = wNum(r, "rest_hr"), let mx = wNum(r, "max_hr"), mx > rest else { return nil }
+            return (rest, mx)
+        } catch { return nil }
+    }
+
+    private func workoutDetail(from r: [String: Any]) -> WorkoutDetail? {
+        guard let id = r["id"] as? String, let started = wDate(r, "started_at") else { return nil }
+        func num(_ v: Any) -> Double? {
+            if let n = v as? NSNumber { return n.doubleValue }
+            if let s = v as? String { return Double(s) }
+            return nil
+        }
+        let series: [WorkoutHRPoint] = (r["hr_series"] as? [[Any]] ?? []).compactMap { p in
+            guard p.count >= 2, let t = num(p[0]), let hr = num(p[1]) else { return nil }
+            return WorkoutHRPoint(t: Date(timeIntervalSince1970: t), hr: Int(hr))
+        }
+        let route: [[Double]] = (r["route"] as? [[Any]] ?? []).compactMap { p in
+            guard p.count >= 2, let lat = num(p[0]), let lon = num(p[1]) else { return nil }
+            return [lat, lon]
+        }
+        let zones: [Int] = (r["zones_min"] as? [Any] ?? []).map { Int(num($0) ?? 0) }
+        return WorkoutDetail(
+            id: id,
+            typeKey: r["type_key"] as? String ?? "",
+            label: r["label"] as? String ?? "Activity",
+            emoji: r["emoji"] as? String ?? "\u{1F4AA}",
+            environment: r["environment"] as? String ?? "indoor",
+            startedAt: started,
+            endedAt: wDate(r, "ended_at"),
+            loggedStart: wDate(r, "logged_started_at"),
+            loggedEnd: wDate(r, "logged_ended_at"),
+            detectedStart: wDate(r, "detected_start"),
+            detectedEnd: wDate(r, "detected_end"),
+            timesMoved: r["times_moved"] as? Bool ?? false,
+            durationSec: wInt(r, "duration_sec") ?? 0,
+            distanceKm: wNum(r, "distance_km"),
+            distanceSource: r["distance_source"] as? String,
+            paceMinPerKm: wNum(r, "pace_min_per_km"),
+            kmh: wNum(r, "kmh"),
+            steps: wInt(r, "steps"),
+            elevationGainM: wNum(r, "elevation_gain_m"),
+            hrAvg: wInt(r, "hr_avg"),
+            hrPeak: wInt(r, "hr_peak"),
+            zonesMin: zones.count == 5 ? zones : [0, 0, 0, 0, 0],
+            hrSeries: series,
+            kcal: wInt(r, "kcal") ?? 0,
+            kcalActive: wInt(r, "kcal_active"),
+            kcalMethod: r["kcal_method"] as? String,
+            hasRoute: (r["has_route"] as? Bool ?? false) && !route.isEmpty,
+            route: route
+        )
     }
 
     // MARK: Weight and back-solved intake (v173)

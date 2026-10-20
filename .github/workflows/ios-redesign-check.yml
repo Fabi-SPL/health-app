@@ -39,7 +39,7 @@ jobs:
           # 2026-10-09: the edge firewall now only answers home + tailnet, so this is the normal case.
           # Still compile (the only build check without a Mac); only the screenshots need the server.
           if [ "$REACHED" = "0" ]; then
-            echo "::warning::The Supabase server does not answer this runner ($IP). Compiling only, no screenshots."
+            echo "::warning::The Supabase server does not answer this runner ($IP). Mock screens only, server screens as empty layouts."
             echo "reachable=0" >> "$GITHUB_OUTPUT"
           else
             echo "reachable=1" >> "$GITHUB_OUTPUT"
@@ -112,7 +112,8 @@ jobs:
           echo "BUILD OK"
 
       - name: Boot, install, screenshot every screen
-        if: steps.reach.outputs.reachable == '1'
+        env:
+          REACHABLE: ${{ steps.reach.outputs.reachable }}
         run: |
           BUNDLE=com.fabi.lucidhealth
           APP=$(find $RUNNER_TEMP/DD/Build/Products/Debug-iphonesimulator -maxdepth 1 -name "LucidHealth.app" | head -1)
@@ -124,25 +125,51 @@ jobs:
           DATA=$(xcrun simctl get_app_container "$UDID" "$BUNDLE" data)
           mkdir -p shots applogs
           FAIL=""
+          EXTRA=""
+          # SOFT=1: a server screen shot without the server, kept only as a layout check.
           shoot() {
-            NAME="$1"; ARG="$2"; WAIT="$3"
+            NAME="$1"; ARG="$2"; WAIT="$3"; SOFT="${4:-}"
             rm -f "$DATA/Documents/lucid-screen-$ARG.ok"
             xcrun simctl terminate "$UDID" "$BUNDLE" >/dev/null 2>&1 || true
             sleep 1
-            SIMCTL_CHILD_TZ=Europe/Berlin SIMCTL_CHILD_NSUnbufferedIO=YES xcrun simctl launch --stdout="$PWD/applogs/$NAME.log" --stderr="$PWD/applogs/$NAME.log" "$UDID" "$BUNDLE" -LucidScreen "$ARG" >/dev/null
+            SIMCTL_CHILD_TZ=Europe/Berlin SIMCTL_CHILD_NSUnbufferedIO=YES xcrun simctl launch --stdout="$PWD/applogs/$NAME.log" --stderr="$PWD/applogs/$NAME.log" "$UDID" "$BUNDLE" -LucidScreen "$ARG" $EXTRA >/dev/null
             sleep "$WAIT"
             xcrun simctl io "$UDID" screenshot "shots/$NAME.png" >/dev/null 2>&1
             SIZE=$(stat -f%z "shots/$NAME.png")
             ALIVE=$(xcrun simctl spawn "$UDID" launchctl list | grep -c "$BUNDLE" || true)
             MARK=no; [ -f "$DATA/Documents/lucid-screen-$ARG.ok" ] && MARK=yes
             echo "$NAME: ${SIZE} bytes, running=$ALIVE, rendered=$MARK"
-            if [ "$ALIVE" = "0" ] || [ "$MARK" = "no" ] || [ "$SIZE" -lt 60000 ]; then
+            if [ -n "$SOFT" ] && [ "$ALIVE" != "0" ]; then
+              echo "$NAME: layout check only (no server)"
+            elif [ "$ALIVE" = "0" ] || [ "$MARK" = "no" ] || [ "$SIZE" -lt 60000 ]; then
               FAIL="$FAIL $NAME"
               echo "--- $NAME app output (last 40 lines) ---"
               tail -40 "applogs/$NAME.log" 2>/dev/null || true
             fi
             grep -h "\[Screen\]" "applogs/$NAME.log" 2>/dev/null | tail -25 || true
           }
+          if [ "$REACHABLE" != "1" ]; then
+            # No server: the mock screens are the real check; Today, Health and Strain only show their empty layout.
+            EXTRA="-LucidOffline"
+            xcrun simctl ui "$UDID" appearance dark
+            shoot 15-activities activities 15
+            shoot 16-activity-route activity-route 20
+            shoot 16b-activity-route-low activity-route-low 20
+            shoot 17-activity-indoor activity-indoor 20
+            shoot 18-workout-start workout-start 15
+            shoot 01-today today 15 soft
+            shoot 02-health health 15 soft
+            shoot 03-strain strain 15 soft
+            xcrun simctl ui "$UDID" appearance light
+            shoot 15l-activities-light activities 15
+            shoot 16l-activity-route-light activity-route 20
+            shoot 16bl-activity-route-low-light activity-route-low 20
+            shoot 17l-activity-indoor-light activity-indoor 20
+            shoot 18l-workout-start-light workout-start 15
+            shoot 08-today-light today 15 soft
+            shoot 08c-health-light health 15 soft
+            shoot 08d-strain-light strain 15 soft
+          else
           xcrun simctl ui "$UDID" appearance dark
           shoot 01-today today 25
           shoot 01b-today-morning today-morning 25
@@ -160,6 +187,10 @@ jobs:
           shoot 12-meal-detail meal-detail 25
           shoot 13-recovery recovery 20
           shoot 14-block-detail block-detail 30
+          shoot 15-activities activities 15
+          shoot 16-activity-route activity-route 20
+          shoot 17-activity-indoor activity-indoor 20
+          shoot 18-workout-start workout-start 15
           xcrun simctl ui "$UDID" appearance light
           shoot 08-today-light today-light 25
           shoot 08b-today-morning-light today-morning 25
@@ -167,6 +198,11 @@ jobs:
           shoot 08d-strain-light strain 30
           shoot 08e-strain-river-light strain-river 30
           shoot 08f-insights-light insights 25
+          shoot 15l-activities-light activities 15
+          shoot 16l-activity-route-light activity-route 20
+          shoot 17l-activity-indoor-light activity-indoor 20
+          shoot 18l-workout-start-light workout-start 15
+          fi
           ls -la shots
           if [ -n "$FAIL" ]; then
             echo "::error::blank, crashed or unrendered screens:$FAIL"

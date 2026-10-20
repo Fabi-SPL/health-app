@@ -858,6 +858,7 @@ extension AppTab {
         case .today: return "circle.circle"
         case .health: return "heart"
         case .strain: return "gauge.with.needle"
+        case .activities: return "figure.run"
         case .insights: return "chart.bar"
         }
     }

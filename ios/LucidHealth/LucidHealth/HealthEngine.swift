@@ -3,12 +3,93 @@ import Combine
 import Accelerate
 import UserNotifications
 import HealthKit
+import UIKit
 
 extension Notification.Name {
     /// Posted by HealthEngine.fetchBaseline() when Supabase restore completes.
     /// BLEManager listens to this to push fresh data into the widget App Group
     /// so lock screen widgets can render on cold start (before the strap connects).
     static let healthBaselineRestored = Notification.Name("lucid.healthBaselineRestored")
+}
+
+/// Live strap values publish to SwiftUI at most once a second, and never while backgrounded.
+/// MetricKit 2026-10-20 (build 250): 48 s CPU in 50 s in the background, all SwiftUI relayout, then iOS killed the app.
+@propertyWrapper
+struct UIGated<Value> {
+    private var stored: Value
+    init(wrappedValue: Value) { stored = wrappedValue }
+
+    @available(*, unavailable, message: "UIGated is only for ObservableObject classes")
+    var wrappedValue: Value {
+        get { fatalError() }
+        set { fatalError() }
+    }
+
+    static subscript<T: ObservableObject>(
+        _enclosingInstance instance: T,
+        wrapped wrappedKeyPath: ReferenceWritableKeyPath<T, Value>,
+        storage storageKeyPath: ReferenceWritableKeyPath<T, UIGated<Value>>
+    ) -> Value {
+        get { instance[keyPath: storageKeyPath].stored }
+        set {
+            instance[keyPath: storageKeyPath].stored = newValue
+            if let publisher = instance.objectWillChange as? ObservableObjectPublisher {
+                UIPublishGate.changed(publisher)
+            }
+        }
+    }
+}
+
+enum UIPublishGate {
+    private static let lock = NSLock()
+    private static var pending: [ObjectIdentifier: ObservableObjectPublisher] = [:]
+    private static var visible = true
+    private static var flushScheduled = false
+    private static var lastFlush = Date.distantPast
+    private static var installed = false
+
+    static func install() {
+        guard !installed else { return }
+        installed = true
+        visible = MainActor.assumeIsolated { UIApplication.shared.applicationState != .background }
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            visible = false
+        }
+        nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
+            visible = true
+            flush()
+        }
+    }
+
+    static func changed(_ publisher: ObservableObjectPublisher) {
+        lock.lock()
+        let wasEmpty = pending.isEmpty
+        pending[ObjectIdentifier(publisher)] = publisher
+        lock.unlock()
+        if wasEmpty { DispatchQueue.main.async { schedule() } }
+    }
+
+    private static func schedule() {
+        install()
+        guard visible, !flushScheduled else { return }
+        flushScheduled = true
+        let wait = max(0, 1 - Date().timeIntervalSince(lastFlush))
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+            flushScheduled = false
+            if visible { flush() }
+        }
+    }
+
+    private static func flush() {
+        lock.lock()
+        let publishers = Array(pending.values)
+        pending.removeAll()
+        lock.unlock()
+        guard !publishers.isEmpty else { return }
+        lastFlush = Date()
+        publishers.forEach { $0.send() }
+    }
 }
 
 /// Lucid Health Engine — computes Cognitive Readiness, RMSSD, and respiratory rate
@@ -23,22 +104,22 @@ extension Notification.Name {
 class HealthEngine: ObservableObject {
 
     // MARK: - Published Metrics
-    @Published var currentRMSSD: Double = 0
-    @Published var lnRMSSD: Double = 0
-    @Published var readiness: ReadinessLevel = .unknown
-    @Published var respiratoryRate: Double = 0  // breaths per minute
-    @Published var currentCoherence: Double = 0  // HeartMath 0.1 Hz coherence ratio (0...1)
-    @Published var sleepDetected: Bool = false
+    @UIGated var currentRMSSD: Double = 0
+    @UIGated var lnRMSSD: Double = 0
+    @UIGated var readiness: ReadinessLevel = .unknown
+    @UIGated var respiratoryRate: Double = 0  // breaths per minute
+    @UIGated var currentCoherence: Double = 0  // HeartMath 0.1 Hz coherence ratio (0...1)
+    @UIGated var sleepDetected: Bool = false
 
     // Research-backed HRV metrics (Shaffer & Ginsberg 2017)
-    @Published var sdnn: Double = 0              // overall autonomic function
-    @Published var pnn50: Double = 0             // parasympathetic, correlates with processing speed
-    @Published var dfaAlpha1: Double = 0          // fractal correlation (1.0 = healthy, <0.75 = stress)
-    @Published var cognitiveCapacity: Double = 0  // 0-100 composite score (v2)
-    @Published var cognitiveLabel: String = "—"   // "Full" / "Reduced" / "Low"
+    @UIGated var sdnn: Double = 0              // overall autonomic function
+    @UIGated var pnn50: Double = 0             // parasympathetic, correlates with processing speed
+    @UIGated var dfaAlpha1: Double = 0          // fractal correlation (1.0 = healthy, <0.75 = stress)
+    @UIGated var cognitiveCapacity: Double = 0  // 0-100 composite score (v2)
+    @UIGated var cognitiveLabel: String = "—"   // "Full" / "Reduced" / "Low"
 
     // Sleep
-    @Published var currentSleepStage: SleepStage = .awake
+    @UIGated var currentSleepStage: SleepStage = .awake
     @Published var smartAlarmTriggered: Bool = false
     @Published var sleepScore: Double = 0
     @Published var sleepDurationHours: Double = 0
@@ -68,16 +149,16 @@ class HealthEngine: ObservableObject {
     @Published var alcoholImpact: Double = 0
 
     // Strain
-    @Published var strainScore: Double = 0
-    @Published var currentHRZone: Int = 0
-    @Published var zoneMinutes: [Int] = [0, 0, 0, 0, 0]
+    @UIGated var strainScore: Double = 0
+    @UIGated var currentHRZone: Int = 0
+    @UIGated var zoneMinutes: [Int] = [0, 0, 0, 0, 0]
     // v115: zoneMinutes is written on main; the Bluetooth queue reads this locked copy instead.
     let zoneLock = NSLock()
     var zoneMinutesShadow: [Int] = [0, 0, 0, 0, 0]
     var zoneMinutesSafe: [Int] { zoneLock.lock(); defer { zoneLock.unlock() }; return zoneMinutesShadow }
 
     // Body Battery & Training Load
-    @Published var bodyBattery: Double = 100
+    @UIGated var bodyBattery: Double = 100
     @Published var trainingLoadRatio: Double = 1.0
     @Published var trainingLoadStatus: String = "Optimal"
     @Published var trainingMonotony: Double = 0
@@ -86,10 +167,10 @@ class HealthEngine: ObservableObject {
     // Illness
     @Published var illnessAlert: String? = nil
     @Published var illnessRisk: Int = 0
-    @Published var todaySteps: Int = 0
+    @UIGated var todaySteps: Int = 0
 
     // IMU
-    @Published var movementScore: Double = 0
+    @UIGated var movementScore: Double = 0
 
     // Baseline (fetched from Supabase)
     @Published var baselineRHR: Double = 60.0
@@ -102,14 +183,14 @@ class HealthEngine: ObservableObject {
     @Published var sleepHoursSD: Double = 0
 
     // Battery prediction
-    @Published var estimatedChargeTime: String = ""
+    @UIGated var estimatedChargeTime: String = ""
 
     // === NEW: Quick Win Metrics (Research Report Apr 10, 2026) ===
 
     // Poincaré SD1/SD2 — autonomic balance (Finding 1.1)
-    @Published var poincaréSD1: Double = 0       // short-term parasympathetic
-    @Published var poincaréSD2: Double = 0       // long-term sympathovagal
-    @Published var poincaréRatio: Double = 0     // SD2/SD1 — high = sympathetic dominant
+    @UIGated var poincaréSD1: Double = 0       // short-term parasympathetic
+    @UIGated var poincaréSD2: Double = 0       // long-term sympathovagal
+    @UIGated var poincaréRatio: Double = 0     // SD2/SD1 — high = sympathetic dominant
 
     // Nocturnal HR Dip — cardiovascular risk screen (Finding 2.1)
     @Published var nocturnalHRDip: Double = 0    // % drop from daytime to sleep HR
@@ -138,9 +219,9 @@ class HealthEngine: ObservableObject {
     @Published var lastAlcoholImpact: Double = 0 // % RMSSD depression vs baseline
 
     // Stealable Whoop community patterns (May 2026) — mirrored from LucidBridge.
-    @Published var baevskyStress: Double = 0          // 0-500, sympathetic activation
-    @Published var baevskyStressLabel: String = "—"   // Calm / Normal / Stressed
-    @Published var edwardsTRIMP: Double = 0           // weighted strain (zone × weight sum)
+    @UIGated var baevskyStress: Double = 0          // 0-500, sympathetic activation
+    @UIGated var baevskyStressLabel: String = "—"   // Calm / Normal / Stressed
+    @UIGated var edwardsTRIMP: Double = 0           // weighted strain (zone × weight sum)
 
     // MARK: - Cognitive Readiness Levels
     enum ReadinessLevel: String {
