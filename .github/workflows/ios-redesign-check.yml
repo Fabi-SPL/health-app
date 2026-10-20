@@ -154,6 +154,7 @@ jobs:
             xcrun simctl ui "$UDID" appearance dark
             shoot 15-activities activities 15
             shoot 16-activity-route activity-route 20
+            shoot 16b-activity-route-low activity-route-low 20
             shoot 17-activity-indoor activity-indoor 20
             shoot 18-workout-start workout-start 15
             shoot 01-today today 15 soft
@@ -162,6 +163,7 @@ jobs:
             xcrun simctl ui "$UDID" appearance light
             shoot 15l-activities-light activities 15
             shoot 16l-activity-route-light activity-route 20
+            shoot 16bl-activity-route-low-light activity-route-low 20
             shoot 17l-activity-indoor-light activity-indoor 20
             shoot 18l-workout-start-light workout-start 15
             shoot 08-today-light today 15 soft

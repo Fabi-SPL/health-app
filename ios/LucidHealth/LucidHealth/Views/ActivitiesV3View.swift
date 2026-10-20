@@ -83,7 +83,7 @@ struct ActivitiesV3View: View {
         autoOpened = true
         try? await Task.sleep(for: .seconds(1.2))
         switch LucidScreen.current {
-        case .activityRoute: detailTarget = workouts.first { $0.id == ActivityMock.walkId }
+        case .activityRoute, .activityRouteLow: detailTarget = workouts.first { $0.id == ActivityMock.walkId }
         case .activityIndoor: detailTarget = workouts.first { $0.id == ActivityMock.bikeId }
         case .workoutStart: showStart = true
         default: break
@@ -237,6 +237,7 @@ private struct ActivityDay: Identifiable {
     let label: String
     let minutes: Double
     var id: Date { day }
+    var key: String { "\(Int(day.timeIntervalSince1970))" }
 }
 
 private struct ActivityWeekCard: View {
@@ -280,19 +281,19 @@ private struct ActivityWeekCard: View {
                 V3LegendItem(dot: V3.kcal, label: "Energy", value: kcal > 0 ? "\(kcal) kcal" : "–")
             }
             Chart(rows) { (d: ActivityDay) in
-                BarMark(x: .value("Day", d.day, unit: .day), y: .value("Minutes", max(d.minutes, 1)), width: .ratio(0.5))
+                BarMark(x: .value("Day", d.key), y: .value("Minutes", max(d.minutes, 1)), width: .ratio(0.5))
                     .foregroundStyle(d.minutes > 0 ? V3.strain : V3.track)
                     .cornerRadius(4)
             }
             .chartYAxis(.hidden)
             .chartXAxis {
-                AxisMarks(values: .stride(by: .day)) { _ in
-                    AxisValueLabel(format: .dateTime.weekday(.narrow), centered: true)
-                        .font(V3Font.text(11)).foregroundStyle(V3.t2)
+                AxisMarks(values: rows.map { $0.key }) { (value: AxisValue) in
+                    AxisValueLabel {
+                        Text(rows.first { $0.key == value.as(String.self) }?.label ?? "")
+                            .font(V3Font.text(11)).foregroundStyle(V3.t2)
+                    }
                 }
             }
-            .chartXScale(domain: weekStart...weekStart.addingTimeInterval(7 * 86400))
-            .environment(\.locale, Locale(identifier: "en_GB"))
             .chartYScale(domain: 0...max(30, (rows.map { $0.minutes }.max() ?? 0) * 1.1))
             .frame(height: 96)
             .padding(.top, 14)
@@ -326,9 +327,9 @@ struct ActivityDetailSheet: View {
                         V3IconButton(symbol: "xmark") { dismiss() }
                     }
                     if let d = detail {
+                        if showsRealTimes(d) { realTimesCard(d) }
                         if d.hasRoute { routeCard(d) }
                         ActivityStatsGrid(d: d)
-                        if showsRealTimes(d) { realTimesCard(d) }
                         heartCard(d)
                         zonesCard(d)
                         placeCard(d)
@@ -340,6 +341,7 @@ struct ActivityDetailSheet: View {
                 .padding(.bottom, 32)
             }
             .scrollIndicators(.hidden)
+            .defaultScrollAnchor(LucidScreen.current == .activityRouteLow ? .bottom : nil)
         }
         .presentationDetents([.large])
         .presentationBackground(V3.sheet)
@@ -353,7 +355,7 @@ struct ActivityDetailSheet: View {
             Button("Delete route", role: .destructive) { Task { await deleteRoute() } }
             Button("Keep", role: .cancel) {}
         }
-        .lucidRendered(.activityRoute, .activityIndoor)
+        .lucidRendered(.activityRoute, .activityRouteLow, .activityIndoor)
     }
 
     private var dateLine: String {
@@ -606,21 +608,25 @@ private struct ActivityStatsGrid: View {
     }
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-            ForEach(items) { (it: Item) in
-                V3Card(padding: 14) {
-                    HStack(spacing: 6) {
-                        Image(systemName: it.icon).font(.system(size: 12, weight: .semibold)).foregroundStyle(it.color)
-                        Text(it.id).font(V3Font.text(13, .semibold)).foregroundStyle(V3.t2).lineLimit(1)
+        V3Card(padding: 16) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .topLeading), count: 3),
+                      alignment: .leading, spacing: 18) {
+                ForEach(items) { (it: Item) in
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(spacing: 5) {
+                            Image(systemName: it.icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(it.color)
+                            Text(it.id).font(V3Font.text(12, .semibold)).foregroundStyle(V3.t2).lineLimit(1)
+                        }
+                        HStack(alignment: .firstTextBaseline, spacing: 2) {
+                            Text(it.value).font(V3Font.num(22)).tracking(-0.5).foregroundStyle(V3.t1)
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                            if !it.unit.isEmpty { Text(it.unit).font(V3Font.text(12)).foregroundStyle(V3.t2).lineLimit(1) }
+                        }
+                        .padding(.top, 6)
+                        Text(it.sub ?? " ").font(V3Font.text(11, .semibold)).foregroundStyle(V3.t3).lineLimit(1)
+                            .padding(.top, 2)
                     }
-                    HStack(alignment: .firstTextBaseline, spacing: 3) {
-                        Text(it.value).font(V3Font.num(26)).tracking(-0.78).foregroundStyle(V3.t1)
-                            .lineLimit(1).minimumScaleFactor(0.7)
-                        if !it.unit.isEmpty { Text(it.unit).font(V3Font.text(14)).foregroundStyle(V3.t2) }
-                    }
-                    .padding(.top, 10)
-                    Text(it.sub ?? " ").font(V3Font.text(12, .semibold)).foregroundStyle(V3.t2).lineLimit(1)
-                        .padding(.top, 3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -673,10 +679,13 @@ private struct ActivityHRChart: View {
         .chartXScale(domain: first...last)
         .chartYScale(domain: lo...hi)
         .chartXAxis {
-            AxisMarks(values: .stride(by: .minute, count: tickEvery)) { _ in
+            AxisMarks(values: .stride(by: .minute, count: tickEvery)) { (value: AxisValue) in
                 AxisGridLine().foregroundStyle(V3.grid)
-                AxisValueLabel(format: .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
-                    .font(V3Font.text(11)).foregroundStyle(V3.t2)
+                AxisValueLabel {
+                    if let t = value.as(Date.self) {
+                        Text(V3Format.hhmm(t)).font(V3Font.text(11)).foregroundStyle(V3.t2)
+                    }
+                }
             }
         }
         .chartYAxis {

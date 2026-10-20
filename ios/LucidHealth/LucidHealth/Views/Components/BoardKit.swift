@@ -17,6 +17,7 @@ enum LucidScreen: String {
     case blockDetail = "block-detail"
     case activities
     case activityRoute = "activity-route"
+    case activityRouteLow = "activity-route-low"
     case activityIndoor = "activity-indoor"
     case workoutStart = "workout-start"
 
@@ -34,7 +35,7 @@ enum LucidScreen: String {
         switch self {
         case .health, .healthDetail: return .health
         case .strain, .strainRiver, .blockDetail: return .strain
-        case .activities, .activityRoute, .activityIndoor, .workoutStart: return .activities
+        case .activities, .activityRoute, .activityRouteLow, .activityIndoor, .workoutStart: return .activities
         case .insights: return .insights
         default: return .today
         }
