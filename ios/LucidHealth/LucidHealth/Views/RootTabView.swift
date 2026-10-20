@@ -1,7 +1,7 @@
 import SwiftUI
 
 // MARK: - RootTabView
-// Four tabs on the V3 board: Today, Health, Strain, Insights. Food logging moved
+// Five tabs on the V3 board: Today, Health, Strain, Activities, Insights. Food logging moved
 // behind the plus on Today. The wake screen after the smart alarm covers it all.
 
 struct RootTabView: View {
@@ -66,6 +66,7 @@ struct RootTabView: View {
                 break
             }
         }
+        .task { await WorkoutTracker.shared.launchWork() }
         .onChange(of: modeStore.current) { _, mode in
             maybeShowWindDown(mode)
         }
@@ -111,6 +112,9 @@ struct RootTabView: View {
                 .environmentObject(bleManager)
         case .strain:
             StrainV3View()
+                .environmentObject(bleManager)
+        case .activities:
+            ActivitiesV3View(isSelected: selectedTab == .activities)
                 .environmentObject(bleManager)
         case .insights:
             InsightsV3View()

@@ -5,13 +5,14 @@ import SwiftUI
 /// 4 tabs: Today / Health / Strain / Insights. Food logging lives behind the plus on Today.
 /// Settings is NOT a tab — accessed via SettingsGearButton sheet.
 enum AppTab: Int, CaseIterable {
-    case today, health, strain, insights
+    case today, health, strain, activities, insights
 
     var icon: String {
         switch self {
         case .today:    return "clock"
         case .health:   return "heart"
         case .strain:   return "gauge.with.needle"
+        case .activities: return "figure.run"
         case .insights: return "chart.xyaxis.line"
         }
     }
@@ -21,6 +22,7 @@ enum AppTab: Int, CaseIterable {
         case .today:    return "Today"
         case .health:   return "Health"
         case .strain:   return "Strain"
+        case .activities: return "Activities"
         case .insights: return "Insights"
         }
     }

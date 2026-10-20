@@ -36,8 +36,10 @@
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>Lucid Health writes recovery and strain scores to Apple Health.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Lucid Health tracks altitude during ski and outdoor sessions.</string>
+	<string>Lucid Health records your route and distance during an outdoor workout you start.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Lucid Health tracks altitude continuously during outdoor sessions.</string>
+	<string>Lucid Health records your route only while an outdoor workout you started is running.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Lucid Health reads your steps for the time of a workout.</string>
 </dict>
 </plist>

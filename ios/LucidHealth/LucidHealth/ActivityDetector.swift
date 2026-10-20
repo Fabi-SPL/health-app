@@ -813,8 +813,9 @@ class ActivityDetector: ObservableObject {
 
     private func updateStatus() {
         let active = activeDetections.map { $0.type }.joined(separator: ", ")
+        let status = active.isEmpty ? "Monitoring" : active
         DispatchQueue.main.async {
-            self.detectorStatus = active.isEmpty ? "Monitoring" : active
+            if self.detectorStatus != status { self.detectorStatus = status }
         }
     }
 }

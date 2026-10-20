@@ -50,6 +50,8 @@
 		LHV00008 /* StrainDayModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10008; };
 		LHV00007 /* TodayV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10007; };
 		LHV00006 /* LiveRideV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10006; };
+		LHV00015 /* ActivitiesV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10015; };
+		LHV00016 /* WorkoutTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10016; };
 		LHV00005 /* WindDownV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10005; };
 		LHV00004 /* WakeV3Screen.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10004; };
 		LHV00003 /* InsightsV3View.swift in Sources */ = {isa = PBXBuildFile; fileRef = LHV10003; };
@@ -193,6 +195,8 @@
 		LHV10008 /* StrainDayModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrainDayModel.swift; sourceTree = "<group>"; };
 		LHV10007 /* TodayV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodayV3View.swift; sourceTree = "<group>"; };
 		LHV10006 /* LiveRideV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveRideV3View.swift; sourceTree = "<group>"; };
+		LHV10015 /* ActivitiesV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivitiesV3View.swift; sourceTree = "<group>"; };
+		LHV10016 /* WorkoutTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Services/WorkoutTracker.swift; sourceTree = "<group>"; };
 		LHV10005 /* WindDownV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindDownV3View.swift; sourceTree = "<group>"; };
 		LHV10004 /* WakeV3Screen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeV3Screen.swift; sourceTree = "<group>"; };
 		LHV10003 /* InsightsV3View.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsV3View.swift; sourceTree = "<group>"; };
@@ -300,6 +304,7 @@
 				LH100003 /* BLEManager.swift */,
 				LH100004 /* WhoopProtocol.swift */,
 				LH100005 /* SupabaseClient.swift */,
+				LHV10016 /* WorkoutTracker.swift */,
 				LH100006 /* HealthEngine.swift */,
 				LH10000C /* HRVEngine.swift */,
 				LH10000D /* SleepEngine.swift */,
@@ -351,6 +356,7 @@
 				LHV10008 /* StrainDayModel.swift */,
 				LHV10007 /* TodayV3View.swift */,
 				LHV10006 /* LiveRideV3View.swift */,
+				LHV10015 /* ActivitiesV3View.swift */,
 				LHV10005 /* WindDownV3View.swift */,
 				LHV10004 /* WakeV3Screen.swift */,
 				LHV10003 /* InsightsV3View.swift */,
@@ -584,6 +590,8 @@
 				LHV00008 /* StrainDayModel.swift in Sources */,
 				LHV00007 /* TodayV3View.swift in Sources */,
 				LHV00006 /* LiveRideV3View.swift in Sources */,
+				LHV00015 /* ActivitiesV3View.swift in Sources */,
+				LHV00016 /* WorkoutTracker.swift in Sources */,
 				LHV00005 /* WindDownV3View.swift in Sources */,
 				LHV00004 /* WakeV3Screen.swift in Sources */,
 				LHV00003 /* InsightsV3View.swift in Sources */,

@@ -21,7 +21,7 @@ class BLEManager: NSObject, ObservableObject {
 
     // MARK: - Published State
     @Published var connectionState: ConnectionState = .disconnected
-    @Published var heartRate: Int = 0
+    @UIGated var heartRate: Int = 0
 
     // Tonight's smart-alarm plan (Module 7 sync). Drives the alcohol UI + card.
     @Published var tonightPlanMode: String = "normal"
@@ -38,15 +38,15 @@ class BLEManager: NSObject, ObservableObject {
     @Published var smartWakePlan: SmartWakePlan?
     @Published var smartWakeStatus: SmartWakeStatus?
 
-    @Published var battery: Double = 0
-    @Published var deviceClock: Date?
-    @Published var isWorn: Bool = false
-    @Published var isCharging: Bool = false
-    @Published var readingsToday: Int = 0
-    @Published var lastSync: Date?
-    @Published var historySyncProgress: String = ""
-    @Published var historySyncCount: Int = 0
-    @Published var skinTemperature: Double = 0
+    @UIGated var battery: Double = 0
+    @UIGated var deviceClock: Date?
+    @UIGated var isWorn: Bool = false
+    @UIGated var isCharging: Bool = false
+    @UIGated var readingsToday: Int = 0
+    @UIGated var lastSync: Date?
+    @UIGated var historySyncProgress: String = ""
+    @UIGated var historySyncCount: Int = 0
+    @UIGated var skinTemperature: Double = 0
     private var skinTempHistory: [(temp: Double, time: Date)] = []
 
     /// Diagnostic surface for the skin-temp pipeline. Exposed via SettingsView's
@@ -54,14 +54,14 @@ class BLEManager: NSObject, ObservableObject {
     /// access. If `lastTempEventAt` is nil 5+ min after BLE connect → strap
     /// firmware doesn't send temp events. If `lastTempRawHex` is non-nil but
     /// `skinTemperature` is 0 → decoder failed → log raw and add fallback parse.
-    @Published var lastTempEventAt: Date?
-    @Published var lastTempRawHex: String?
-    @Published var lastTempEventSource: String?  // "TEMPERATURE event" | "type-49 metadata"
-    @Published var totalTempEventsReceived: Int = 0
+    @UIGated var lastTempEventAt: Date?
+    @UIGated var lastTempRawHex: String?
+    @UIGated var lastTempEventSource: String?  // "TEMPERATURE event" | "type-49 metadata"
+    @UIGated var totalTempEventsReceived: Int = 0
     /// All type-49 packets observed, unconditional. Lets the diagnostics card
     /// distinguish "packets arrive but get gated by isDownloadingHistory" from
     /// "no packets at all". Counter increments BEFORE any state checks.
-    @Published var totalType49PacketsSeen: Int = 0
+    @UIGated var totalType49PacketsSeen: Int = 0
     /// Mirror of isDownloadingHistory for the diagnostics card. If this stays
     /// true forever, the gate is stuck and skin-temp decoding is blocked.
     @Published var isHistorySyncing: Bool = false
@@ -98,12 +98,13 @@ class BLEManager: NSObject, ObservableObject {
     // we expect type-51 (IMU @ 52Hz), type-43 (raw PPG), and type-2 (HR) to
     // all increment continuously. If any stays at 0, that capability isn't
     // streaming on this firmware.
-    @Published var packetTypeCounts: [Int: Int] = [:]
-    @Published var packetTypeLastSeen: [Int: Date] = [:]
+    @UIGated var packetTypeCounts: [Int: Int] = [:]
+    @UIGated var packetTypeLastSeen: [Int: Date] = [:]
     @Published var sessionStartedAt: Date = Date()
 
     // MARK: - Debug Log (visible on screen)
-    @Published var debugLog: [String] = []
+    // 2026-10-20: no view shows debugLog, so it no longer publishes. Its once-a-second flush redrew every tab, also in the background.
+    var debugLog: [String] = []
     private let maxLogLines = 200
     // v115: lines wait here and reach debugLog at most once a second. One @Published write per line
     // re-rendered every observing view for every line (hundreds a second during a history download).
@@ -154,7 +155,7 @@ class BLEManager: NSObject, ObservableObject {
     let activityDetector = ActivityDetector()
 
     // MARK: - IMU State (stored here because extensions can't have stored properties)
-    @Published var imuActive = false
+    @UIGated var imuActive = false
     var imuSampleCount = 0
     var lastIMULog: Date?
 
@@ -509,7 +510,7 @@ class BLEManager: NSObject, ObservableObject {
     private let audioRecoveryInterval: TimeInterval = 5  // retry setActive every 5s while interrupted
 
     // MARK: - Battery Prediction
-    @Published var batteryPrediction: String = ""
+    @UIGated var batteryPrediction: String = ""
     private var batteryHistory: [(date: Date, level: Double)] = []
     private let batteryHistoryKey = "lucid_battery_history"
 

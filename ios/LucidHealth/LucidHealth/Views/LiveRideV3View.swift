@@ -12,6 +12,10 @@ struct LiveRideV3View: View {
     @State private var showDiscard = false
     @State private var summary: SupabaseClient.WorkoutSummary? = nil
     @State private var finishing = false
+    @ObservedObject private var tracker = WorkoutTracker.shared
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var outdoor: Bool { tracker.isOutdoor(session.id) }
 
     var body: some View {
         ZStack {
@@ -22,7 +26,9 @@ struct LiveRideV3View: View {
                 liveBody
             }
         }
-        .task {
+        .task(id: scenePhase) {
+            // nothing on screen to update in the background, so no polling there
+            guard scenePhase == .active else { return }
             while !Task.isCancelled && summary == nil {
                 if let l = await SupabaseClient.shared.workoutLive(id: session.id) {
                     await MainActor.run { live = l }
@@ -30,17 +36,25 @@ struct LiveRideV3View: View {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }
+        .onAppear { tracker.resume(session: session) }
         .sheet(isPresented: $showFinish) {
-            LiveRideFinishSheet(session: session, busy: $finishing) { km, load, rpe in
+            LiveRideFinishSheet(session: session, busy: $finishing, gpsDistance: tracker.hasRoute) { km, load, rpe in
                 Task {
                     await MainActor.run { finishing = true }
+                    await tracker.stop(sessionId: session.id)
                     let s = await SupabaseClient.shared.workoutFinish(
                         id: session.id, distanceKm: km, load: load, rpe: rpe
                     )
+                    var track: SupabaseClient.WorkoutTrackResult? = nil
+                    if s != nil { track = await tracker.upload(sessionId: session.id) }
                     await MainActor.run {
                         finishing = false
                         showFinish = false
-                        if let s {
+                        if var s {
+                            if let d = track?.distanceKm, d > 0 {
+                                s = SupabaseClient.WorkoutSummary(durationSec: s.durationSec, distanceKm: d, kcal: s.kcal,
+                                                                  kcalSource: s.kcalSource, hrAvg: s.hrAvg, headline: s.headline)
+                            }
                             UINotificationFeedbackGenerator().notificationOccurred(.success)
                             summary = s
                         } else {
@@ -121,14 +135,14 @@ struct LiveRideV3View: View {
     private var clockBlock: some View {
         VStack(spacing: 0) {
             Text("Elapsed").font(V3Font.text(13, .semibold)).foregroundStyle(V3.t2)
-            TimelineView(.periodic(from: session.startedAt, by: 1)) { ctx in
-                Text(Self.clock(ctx.date.timeIntervalSince(session.startedAt)))
-                    .font(V3Font.num(56))
-                    .tracking(-2.8)
-                    .foregroundStyle(V3.t1)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-            }
+            // the system ticks this text itself; a 1 s TimelineView re-laid out the whole screen every second
+            Text(timerInterval: session.startedAt...Date.distantFuture, countsDown: false)
+                .font(V3Font.num(56))
+                .tracking(-2.8)
+                .foregroundStyle(V3.t1)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 14)
@@ -145,7 +159,12 @@ struct LiveRideV3View: View {
     private var statRow: some View {
         HStack(spacing: 10) {
             LiveRideStat(label: "Energy", value: live.map { "\($0.kcal)" }, unit: "kcal", color: V3.kcal)
-            LiveRideStat(label: "Average", value: live?.hrAvg.map { "\($0)" }, unit: "bpm", color: V3.t1)
+            if outdoor {
+                LiveRideStat(label: "Distance", value: tracker.pointCount >= 2 ? String(format: "%.2f", tracker.liveKm) : nil,
+                             unit: tracker.locationDenied ? "no GPS" : "km", color: V3.t1)
+            } else {
+                LiveRideStat(label: "Average", value: live?.hrAvg.map { "\($0)" }, unit: "bpm", color: V3.t1)
+            }
             LiveRideStat(label: "Peak", value: live?.hrPeak.map { "\($0)" }, unit: "bpm", color: V3.heart)
         }
         .padding(.top, 16)
@@ -185,6 +204,7 @@ struct LiveRideV3View: View {
 
     private func discard() {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        tracker.cancel()
         Task {
             await SupabaseClient.shared.workoutCancel(id: session.id)
             await MainActor.run { onClosed() }
@@ -310,6 +330,7 @@ private struct LiveRideStat: View {
 private struct LiveRideFinishSheet: View {
     let session: SupabaseClient.WorkoutSession
     @Binding var busy: Bool
+    var gpsDistance: Bool = false
     let onSave: (Double?, Int?, Int?) -> Void
 
     @State private var kmText = ""
@@ -325,7 +346,7 @@ private struct LiveRideFinishSheet: View {
                 .foregroundStyle(V3.t1)
                 .padding(.top, 22)
 
-            if session.tracksDistance { distanceField }
+            if session.tracksDistance && !gpsDistance { distanceField }
 
             if session.tracksLoad {
                 scale(title: "Resistance", value: $load, tint: V3.strain)

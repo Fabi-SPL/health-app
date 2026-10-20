@@ -15,6 +15,10 @@ enum LucidScreen: String {
     case mealDetail = "meal-detail"
     case recovery
     case blockDetail = "block-detail"
+    case activities
+    case activityRoute = "activity-route"
+    case activityIndoor = "activity-indoor"
+    case workoutStart = "workout-start"
 
     static let current: LucidScreen? = {
         #if DEBUG
@@ -30,6 +34,7 @@ enum LucidScreen: String {
         switch self {
         case .health, .healthDetail: return .health
         case .strain, .strainRiver, .blockDetail: return .strain
+        case .activities, .activityRoute, .activityIndoor, .workoutStart: return .activities
         case .insights: return .insights
         default: return .today
         }
@@ -44,6 +49,15 @@ enum LucidScreen: String {
         #endif
     }
     private static var guardInstalled = false
+
+    /// -LucidOffline: refuse every request, so a runner that cannot reach the server shows the empty state fast.
+    static let forceOffline: Bool = {
+        #if DEBUG
+        return ProcessInfo.processInfo.arguments.contains("-LucidOffline")
+        #else
+        return false
+        #endif
+    }()
 
     /// Screenshot runs only: prints one line, so CI can see where a screen stalls.
     static func trace(_ msg: String) {
@@ -89,7 +103,7 @@ enum LucidScreen: String {
 /// Screenshot runs read real data but may never write: every non-GET request except sign-in is refused.
 final class LucidReadOnlyGuard: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool {
-        if LucidScreen.current == .offline { return true }
+        if LucidScreen.current == .offline || LucidScreen.forceOffline || ActivityMock.active { return true }
         let method = (request.httpMethod ?? "GET").uppercased()
         if method == "GET" || method == "HEAD" { return false }
         if method == "POST", request.url?.path.hasSuffix("/auth/v1/token") == true { return false }
