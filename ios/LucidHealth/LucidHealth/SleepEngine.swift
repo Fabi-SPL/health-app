@@ -817,7 +817,8 @@ extension HealthEngine {
 
         print("[GapReplay] \(Int(gapTotalMin)) min gap: deep=\(Int(gapDeepMin))m light=\(Int(gapLightMin))m rem=\(Int(gapRemMin))m awake=\(Int(gapAwakeMin))m")
 
-        guard gapSleepMin > 30 else {
+        // A wake in the gap still ends a night that was running, even when the gap itself held little sleep.
+        guard gapSleepMin > 30 || (wasSleepingBeforeGap && sleepStartTime != nil && wakeUpTime != nil) else {
             print("[GapReplay] Not enough sleep in gap (<30 min) — skipping")
             return
         }
@@ -828,6 +829,10 @@ extension HealthEngine {
             stageMinutes[.rem, default: 0] += gapRemMin
             stageMinutes[.awake, default: 0] += gapAwakeMin
             print("[GapReplay] Extended existing sleep session with gap data")
+        } else if wakeUpTime == nil {
+            // No session and no wake: a start set here would be kept by tonight's markSleepStart and drawn on the clock.
+            print("[GapReplay] No session and no wake in the gap — nothing created")
+            return
         } else {
             sleepStartTime = readings.first!.time
             stageMinutes = [.deep: gapDeepMin, .light: gapLightMin, .rem: gapRemMin, .awake: gapAwakeMin]

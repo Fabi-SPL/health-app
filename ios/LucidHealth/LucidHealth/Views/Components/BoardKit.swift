@@ -298,6 +298,8 @@ final class BoardStore: ObservableObject {
     @Published var loadedOnce = false
     private var inflight: Task<Void, Never>?
     private var lastLoad: Date?
+    private var scoresDay: String? = UserDefaults.standard.string(forKey: BoardStore.cacheDayKey)
+    private var stagesStart: Date?
 
     var night: BoardNight { BoardNight(scores: scores) }
 
@@ -313,6 +315,7 @@ final class BoardStore: ObservableObject {
     /// One load at a time, run outside the caller's task: a view's .task is cancelled when the app comes back
     /// (10-24 10:50: five RPCs "cancelled" in one second), and a cancelled load used to blank the board.
     func refresh(force: Bool = false) async {
+        markStaleIfDayChanged()
         if let t = inflight { await t.value; return }
         if !force, let l = lastLoad, Date().timeIntervalSince(l) < 120 { return }
         let t = Task { @MainActor in await self.load() }
@@ -329,7 +332,7 @@ final class BoardStore: ObservableObject {
             if attempt > 0 { try? await Task.sleep(for: .seconds(attempt == 1 ? 2 : 6)) }
             if !gotScores {
                 let s = await client.fetchLastScores()
-                if !s.isEmpty { scores = s; Self.cache(s); gotScores = true }
+                if !s.isEmpty { scores = s; Self.cache(s); scoresDay = Self.berlinDay(); gotScores = true }
             }
             if !gotMetrics {
                 let m = await client.fetchDailyMetrics(days: 14)
@@ -340,7 +343,11 @@ final class BoardStore: ObservableObject {
         let n = BoardNight(scores: scores)
         if let a = n.start, let b = n.end, b > a {
             let raw = await client.fetchSleepStages(start: a, end: b)
-            if !raw.isEmpty || stages.isEmpty { stages = StageSegment.build(from: raw) }
+            // Another night's stages never sit under this night's times; a failed fetch keeps this night's.
+            if !raw.isEmpty || stagesStart != a { stages = StageSegment.build(from: raw); stagesStart = a }
+        } else {
+            stages = []
+            stagesStart = nil
         }
         do {
             meals = try await client.fetchRecentFoodEntries(limit: 30)
@@ -350,6 +357,14 @@ final class BoardStore: ObservableObject {
         }
         if gotScores && gotMetrics { lastLoad = Date() }
         loadedOnce = true
+    }
+
+    /// The app lives for days over BLE, so yesterday's row stops reading as last night once the Berlin day
+    /// turns, even when every fetch that morning fails.
+    private func markStaleIfDayChanged() {
+        guard var s = scores, s["is_fallback"] == nil, scoresDay != Self.berlinDay() else { return }
+        s["is_fallback"] = 1
+        scores = s
     }
 
     private static let cacheKey = "lucid_board_scores_cache"

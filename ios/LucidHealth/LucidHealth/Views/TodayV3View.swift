@@ -156,13 +156,13 @@ extension TodayV3Screen {
 
     /// The server owns last night. The phone's own estimate shows only while it is tracking a night live:
     /// 10-25 it kept a 19:00-22:12 couch block as "3 h" after the server had marked the night a tracking error.
+    /// engine.sleepDurationHours only ever holds a server value, so a night in progress counts from its own start.
     var sleepHoursValue: Double? {
-        if engine.sleepDetected, engine.sleepDurationHours > 0 { return engine.sleepDurationHours }
-        if let n = freshNight {
-            if let h = n.hours { return h }
-            if n.isTechnicalGap { return nil }
+        if engine.sleepDetected, let s = engine.sleepStartTime, now > s, now.timeIntervalSince(s) < 14 * 3600 {
+            return now.timeIntervalSince(s) / 3600
         }
-        return engine.sleepDurationHours > 0 ? engine.sleepDurationHours : nil
+        guard let n = freshNight, !n.isTechnicalGap else { return nil }
+        return n.hours
     }
 
     var strainFresh: Double? {
@@ -453,7 +453,7 @@ extension TodayV3Screen {
             if n.isTechnicalGap { return (nil, nil) }
             if let s = n.start, let e = n.end, e > s { return (s, e) }
         }
-        return (engine.sleepStartTime, engine.sleepEndTime)
+        return (nil, nil)
     }
 
     var clockHero: some View {

@@ -1314,6 +1314,7 @@ class BLEManager: NSObject, ObservableObject {
     // A drain is cut into chunks: the in-memory buffer and the pending file stay small, each chunk is
     // uploaded before the next starts, and live HR runs between chunks.
     private let historyChunkRecords = 3000
+    private var drainChunkRecords = 3000
     private var historyUploadInFlight = false
     private var historyUploadFailedAt = Date.distantPast
     // A chunk pause leaves the rest of a real gap on the strap. That rest is not queue upkeep, so it
@@ -1352,6 +1353,8 @@ class BLEManager: NSObject, ObservableObject {
               Date().timeIntervalSince(lastDrainAttempt) > (backlog ? 60 : 10 * 60) else { return }
         guard Date().timeIntervalSince(historyUploadFailedAt) > 15 * 60 else { logDrainSkip("upload_failed_recently"); return }
         guard Date().timeIntervalSince(lastDataReceived) < 60 else { logDrainSkip("no_live_data"); return }
+        // Before the server round trip: inside the alarm window that was one request a minute for an hour.
+        guard historyDrainAllowed(sleeping: false) else { logDrainSkip("alarm_window"); return }
         lastDrainAttempt = Date()
         Task { [weak self] in
             guard let self else { return }
@@ -1378,7 +1381,8 @@ class BLEManager: NSObject, ObservableObject {
                 p.writeValue(WhoopProtocol.stopHRPacket(), for: c, type: .withResponse)
                 self.bleQueue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                     guard let self, !self.isDownloadingHistory else { return }
-                    self.startHistoryDownload()
+                    // A chunk keeps live HR off for up to ~12 min; asleep, a third of the size keeps the night staged.
+                    self.startHistoryDownload(chunkRecords: sleeping ? 1000 : self.historyChunkRecords)
                 }
             }
         }
@@ -1857,7 +1861,8 @@ class BLEManager: NSObject, ObservableObject {
         log("History request (bare CMD 22) sent [\(trigger)] — waiting for strap…")
     }
 
-    private func startHistoryDownload(overrideGapStart: Date? = nil) {
+    private func startHistoryDownload(overrideGapStart: Date? = nil, chunkRecords: Int? = nil) {
+        drainChunkRecords = chunkRecords ?? historyChunkRecords
         guard peripheral != nil, cmdToStrap != nil else {
             log("History download skipped — no peripheral/char")
             startRealtimeStreaming()
@@ -2299,7 +2304,7 @@ class BLEManager: NSObject, ObservableObject {
             let sameEmptyTrim = emptyTrim != nil && (ud.object(forKey: "history_empty_abort_trim") as? Int) == emptyTrim
             let emptyAborts = sameEmptyTrim ? ud.integer(forKey: "history_empty_abort_count") + 1 : 1
             let alarmWindowOpen = !historyDrainAllowed(sleeping: false)
-            if alarmWindowOpen || historyBuffer.count + historyV25ThisChunk >= historyChunkRecords {
+            if alarmWindowOpen || historyBuffer.count + historyV25ThisChunk >= drainChunkRecords {
                 // Chunk boundary, or the smart-alarm window opened: this batch is NOT acked, so the strap
                 // keeps it and re-serves it next time; what is buffered uploads now, live HR resumes, and the
                 // watchdog starts the next chunk once the upload has finished (after the window for an alarm).
