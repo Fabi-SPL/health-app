@@ -975,7 +975,14 @@ class BLEManager: NSObject, ObservableObject {
             let batch = logPushBuffer
             logPushBuffer.removeAll()
             try? FileManager.default.removeItem(at: Self.logTailURL)
-            supabase.pushAppLog(lines: batch, sessionId: String(sessionId))
+            // 10-25 13:06-13:38 the network was down and every heartbeat from it was dropped.
+            supabase.pushAppLog(lines: batch, sessionId: String(sessionId)) { [weak self] failed in
+                guard let self else { return }
+                self.logQueue.async {
+                    self.logPushBuffer.insert(contentsOf: failed.suffix(400), at: 0)
+                    if self.logPushBuffer.count > 800 { self.logPushBuffer.removeFirst(self.logPushBuffer.count - 800) }
+                }
+            }
         }
     }
 
@@ -1221,8 +1228,11 @@ class BLEManager: NSObject, ObservableObject {
                 }
             }
 
-            // Strategy 1: Re-send the startHR command to wake up the data stream
-            if let p = peripheral, let c = cmdToStrap, p.state == .connected {
+            // Strategy 1: Re-send the startHR command to wake up the data stream. Never mid-download:
+            // live HR is off on purpose while the strap serves history, and the history timeout owns that stretch.
+            if isDownloadingHistory {
+                log("WATCHDOG: history download in progress — not restarting live HR")
+            } else if let p = peripheral, let c = cmdToStrap, p.state == .connected {
                 log("WATCHDOG: Re-sending startHR to wake data stream")
                 p.writeValue(WhoopProtocol.startHRPacket(), for: c, type: .withResponse)
 
@@ -1306,6 +1316,11 @@ class BLEManager: NSObject, ObservableObject {
     private let historyChunkRecords = 3000
     private var historyUploadInFlight = false
     private var historyUploadFailedAt = Date.distantPast
+    // A chunk pause leaves the rest of a real gap on the strap. That rest is not queue upkeep, so it
+    // drains whether the engine thinks he is asleep or not; only the alarm window holds it.
+    private var historyBacklogPending = false
+    private var lastDrainSkipLog = Date.distantPast
+    private var liveResumedAt = Date.distantPast
 
     var historyDrainDue: Bool {
         let at = UserDefaults.standard.double(forKey: historyDrainedKey)
@@ -1323,12 +1338,20 @@ class BLEManager: NSObject, ObservableObject {
         return !(minute >= start && minute <= end)
     }
 
+    /// Why a backlog did not drain, at most every 10 min. 10-25 a backlog sat for hours and nothing said why.
+    private func logDrainSkip(_ reason: String) {
+        guard historyBacklogPending, Date().timeIntervalSince(lastDrainSkipLog) > 10 * 60 else { return }
+        lastDrainSkipLog = Date()
+        supabase.pushDebugLog(key: "history_drain_skipped", value: "reason=\(reason) backlog=1")
+    }
+
     /// Watchdog tick (bleQueue, every 30 s while streaming).
     private func considerHistoryDrain() {
-        guard !isDownloadingHistory, !historyUploadInFlight, peripheral != nil, cmdToStrap != nil, historyDrainDue,
-              Date().timeIntervalSince(lastDrainAttempt) > 10 * 60,
-              Date().timeIntervalSince(historyUploadFailedAt) > 15 * 60,
-              Date().timeIntervalSince(lastDataReceived) < 60 else { return }
+        let backlog = historyBacklogPending
+        guard !isDownloadingHistory, !historyUploadInFlight, peripheral != nil, cmdToStrap != nil, backlog || historyDrainDue,
+              Date().timeIntervalSince(lastDrainAttempt) > (backlog ? 60 : 10 * 60) else { return }
+        guard Date().timeIntervalSince(historyUploadFailedAt) > 15 * 60 else { logDrainSkip("upload_failed_recently"); return }
+        guard Date().timeIntervalSince(lastDataReceived) < 60 else { logDrainSkip("no_live_data"); return }
         lastDrainAttempt = Date()
         Task { [weak self] in
             guard let self else { return }
@@ -1340,11 +1363,18 @@ class BLEManager: NSObject, ObservableObject {
             }
             let sleeping = await MainActor.run { self.healthEngine.sleepDetected }
             self.bleQueue.async {
-                guard !self.isDownloadingHistory, !self.historyUploadInFlight, self.historyDrainAllowed(sleeping: sleeping),
-                      let p = self.peripheral, let c = self.cmdToStrap else { return }
+                // Asleep, a backlog still drains, but live HR gets 5 min between chunks for the night's staging.
+                let allowed = backlog
+                    ? self.historyDrainAllowed(sleeping: false) && Date().timeIntervalSince(self.liveResumedAt) >= (sleeping ? 300 : 30)
+                    : self.historyDrainAllowed(sleeping: sleeping)
+                guard !self.isDownloadingHistory, !self.historyUploadInFlight, allowed,
+                      let p = self.peripheral, let c = self.cmdToStrap else {
+                    self.logDrainSkip(allowed ? "busy" : (backlog && self.historyDrainAllowed(sleeping: false) ? "live_turn" : "alarm_window"))
+                    return
+                }
                 let at = UserDefaults.standard.double(forKey: self.historyDrainedKey)
                 let mins = at > 0 ? Int((Date().timeIntervalSince1970 - at) / 60) : -1
-                self.supabase.pushDebugLog(key: "history_drain_start", value: "reason=periodic mins_since_drained=\(mins)")
+                self.supabase.pushDebugLog(key: "history_drain_start", value: "reason=\(backlog ? "backlog" : "periodic") mins_since_drained=\(mins)")
                 p.writeValue(WhoopProtocol.stopHRPacket(), for: c, type: .withResponse)
                 self.bleQueue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                     guard let self, !self.isDownloadingHistory else { return }
@@ -1521,6 +1551,7 @@ class BLEManager: NSObject, ObservableObject {
     private func startRealtimeStreaming() {
         guard let p = peripheral, let c = cmdToStrap else { return }
         p.writeValue(WhoopProtocol.startHRPacket(), for: c, type: .withResponse)
+        liveResumedAt = Date()
         DispatchQueue.main.async {
             self.connectionState = .streaming
             // Reset per-session packet counters so the diagnostics card shows
@@ -1907,6 +1938,7 @@ class BLEManager: NSObject, ObservableObject {
         timer.setEventHandler { [weak self] in
             guard let self, self.isDownloadingHistory else { return }
             self.log("History download TIMEOUT after 120s [\(trigger)] — \(self.historyBuffer.count) records received")
+            self.historyBacklogPending = false
             self.supabase.pushDebugLog(
                 key: "history_sync_timeout",
                 value: "trigger=\(trigger) records_buffered=\(self.historyBuffer.count) batches=\(self.historyBatchCount)"
@@ -1987,6 +2019,7 @@ class BLEManager: NSObject, ObservableObject {
             // empty buffer noise unambiguously.
             var oorSamples: [String] = []
             let oorSampleCap = 8
+            var acceptedSeconds = Set<Int>()
 
             for r in recordsFromStrap {
                 let ts = Int(r.timestamp)
@@ -2021,6 +2054,8 @@ class BLEManager: NSObject, ObservableObject {
                     skippedAlreadyCovered += 1
                     continue
                 }
+                // 7 days to 10-25: 5.5 % of backfill rows were the same second twice from one upload.
+                guard acceptedSeconds.insert(ts).inserted else { continue }
                 let recordedAt = Date(timeIntervalSince1970: TimeInterval(ts))
                 let rmssd: Double = {
                     let rrs = r.rrIntervals.map { Double($0) }
@@ -2124,7 +2159,9 @@ class BLEManager: NSObject, ObservableObject {
             // sleep_start/stages get retroactively corrected for any sleep window
             // that was in the gap (works for both auto-reconnect and manual paths).
             sleepReplayPairs.sort { $0.time < $1.time }
-            if !sleepReplayPairs.isEmpty {
+            // Only a gap that reaches now says anything about now. 10-25 a chunk from 02:00 was replayed at
+            // 13:49, the engine decided he was still asleep, and that flag held the rest of the night on the strap.
+            if let newest = sleepReplayPairs.last?.time, Date().timeIntervalSince(newest) < 10 * 60 {
                 self.log("Replaying \(sleepReplayPairs.count) gap readings for sleep analysis")
                 self.healthEngine.replayGapForSleep(readings: sleepReplayPairs)
             }
@@ -2162,7 +2199,7 @@ class BLEManager: NSObject, ObservableObject {
         // Log size + seq (version discriminator) + the byte the parser treats as
         // HR + the parse outcome so the next build fixes the layout with zero
         // guessing. Pure diagnostic — behaviour below is unchanged.
-        if historyRawCaptureCount < 40 {
+        if historyRawCaptureCount < 4 {
             historyRawCaptureCount += 1
             let d = packet.data
             let s = d.startIndex
@@ -2212,7 +2249,9 @@ class BLEManager: NSObject, ObservableObject {
             // Idle, not total: 7 syncs since 09-27 were cut off at 120 s with 9-20 batches still flowing.
             armHistorySyncTimeout(trigger: trigger)
             log("History batch \(historyBatchCount) started")
-            supabase.pushDebugLog(key: "history_sync_batch_start", value: "trigger=\(trigger) batch=\(historyBatchCount) running_total=\(historyBuffer.count)")
+            if historyBatchCount <= 3 || historyBatchCount % 20 == 0 {
+                supabase.pushDebugLog(key: "history_sync_batch_start", value: "trigger=\(trigger) batch=\(historyBatchCount) running_total=\(historyBuffer.count)")
+            }
 
         case 2: // META_HISTORY_END — ack and request next batch
             // v113 — trim-offset fix + diagnostic. parseHistoryMetadata reads trim
@@ -2236,7 +2275,9 @@ class BLEManager: NSObject, ObservableObject {
                 : 0
             let t8str = trim8.map { "\($0)" } ?? "nil"
             let t10str = trim10.map { "\($0)" } ?? "nil"
-            supabase.pushDebugLog(key: "history_meta_raw", value: "trigger=\(trigger) batch=\(historyBatchCount) len=\(d.count) hex=\(metaHex) trim_at8=\(t8str) trim_at10=\(t10str)")
+            if historyBatchCount <= 3 || historyBatchCount % 20 == 0 {
+                supabase.pushDebugLog(key: "history_meta_raw", value: "trigger=\(trigger) batch=\(historyBatchCount) len=\(d.count) hex=\(metaHex) trim_at8=\(t8str) trim_at10=\(t10str)")
+            }
             // v106 — the ack is a DESTRUCTIVE TRIM: it advances the strap's read
             // pointer past everything the batch covered. Until now it was sent
             // unconditionally, so every empty sync since 2026-09-20 17:00 trimmed a
@@ -2268,6 +2309,7 @@ class BLEManager: NSObject, ObservableObject {
                     p.writeValue(WhoopProtocol.abortHistoricalTransmitsPacket(), for: c, type: .withResponse)
                 }
                 if !alarmWindowOpen { lastDrainAttempt = .distantPast }
+                historyBacklogPending = true
                 historySyncTimer?.cancel(); historySyncTimer = nil
                 finishHistoryDownload()
             } else if deliveredThisBatch == 0 && packetsThisBatch > 0, let trim = trim10 ?? trim8 {
@@ -2298,6 +2340,7 @@ class BLEManager: NSObject, ObservableObject {
                 if let p = peripheral, let c = cmdToStrap {
                     p.writeValue(WhoopProtocol.abortHistoricalTransmitsPacket(), for: c, type: .withResponse)
                 }
+                historyBacklogPending = false
                 historySyncTimer?.cancel(); historySyncTimer = nil
                 finishHistoryDownload()
             } else if let trim = trim10 ?? trim8 {
@@ -2317,6 +2360,7 @@ class BLEManager: NSObject, ObservableObject {
             log("HISTORY COMPLETE! \(historyBuffer.count) total records across \(historyBatchCount) batches")
             historySyncTimer?.cancel(); historySyncTimer = nil
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: historyDrainedKey)
+            historyBacklogPending = false
             supabase.pushDebugLog(key: "history_drained", value: "trigger=\(trigger) batches=\(historyBatchCount) records=\(historyBuffer.count) nohr_acks=\(historyNoHRAcks)")
 
             DispatchQueue.main.async {

@@ -1668,6 +1668,13 @@ class SupabaseClient {
     /// Returns (uploaded, failed) counts.
     func pushBackfillBatch(records: [(timestamp: Date, hr: UInt8, rrIntervals: [UInt16], hrv: Double)]) async -> (uploaded: Int, failed: Int) {
         guard !records.isEmpty else { return (0, 0) }
+        // 10-25 12:26 he locked the phone mid-upload, iOS suspended the app and all 1061 rows failed.
+        var bgTask: UIBackgroundTaskIdentifier = .invalid
+        bgTask = await MainActor.run { UIApplication.shared.beginBackgroundTask(withName: "lucid-backfill-upload") }
+        defer {
+            let t = bgTask
+            if t != .invalid { Task { @MainActor in UIApplication.shared.endBackgroundTask(t) } }
+        }
         do {
             try await ensureAuth()
             guard accessToken != nil else { return (0, records.count) }
@@ -1677,7 +1684,7 @@ class SupabaseClient {
 
             var uploaded = 0
             var failed = 0
-            let chunkSize = 50
+            let chunkSize = 250
 
             for chunkStart in stride(from: 0, to: records.count, by: chunkSize) {
                 try await ensureAuth()
@@ -1707,12 +1714,24 @@ class SupabaseClient {
                 req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 req.httpBody = try JSONSerialization.data(withJSONObject: rows)
 
-                let (data, resp) = try await session.data(for: req)
-                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-                if code < 300 {
+                // A dropped connection (10-25 12:26, -1005) used to fail the whole upload on the first part.
+                var code = 0
+                var errBody = ""
+                for attempt in 0..<3 {
+                    do {
+                        let (data, resp) = try await session.data(for: req)
+                        code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                        errBody = code < 300 ? "" : (String(data: data, encoding: .utf8) ?? "?")
+                    } catch {
+                        code = 0
+                        errBody = error.localizedDescription
+                    }
+                    if code > 0 && code < 500 { break }
+                    if attempt < 2 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
+                }
+                if code > 0 && code < 300 {
                     uploaded += chunk.count
                 } else {
-                    let errBody = String(data: data, encoding: .utf8) ?? "?"
                     log("Backfill chunk FAILED HTTP \(code): \(errBody.prefix(120))")
                     failed += chunk.count
                 }
@@ -2830,7 +2849,7 @@ class SupabaseClient {
 
     /// Push a batch of debug log lines to a dedicated table for remote debugging.
     /// Uses knowledge_entries with category "device_log" so we can query by device/session.
-    func pushAppLog(lines: [String], sessionId: String) {
+    func pushAppLog(lines: [String], sessionId: String, onFailure: (([String]) -> Void)? = nil) {
         guard !lines.isEmpty else { return }
         Task {
             do {
@@ -2877,9 +2896,11 @@ class SupabaseClient {
                 if statusCode >= 300 {
                     let respBody = String(data: data, encoding: .utf8) ?? ""
                     print("[SB] App log push FAILED: HTTP \(statusCode) — \(respBody.prefix(200))")
+                    if statusCode >= 500 || statusCode == 401 { onFailure?(lines) }
                 }
             } catch {
                 print("[SB] App log push error: \(error.localizedDescription)")
+                onFailure?(lines)
             }
         }
     }

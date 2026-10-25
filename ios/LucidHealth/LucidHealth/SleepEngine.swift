@@ -142,6 +142,13 @@ extension HealthEngine {
             // accumulates while moving. 5-min threshold below means "actually
             // physically moving for 5 sustained minutes" — the bar to claim
             // someone is no longer asleep based on movement alone.
+            // 10-24 HR 78-114 from 14:18 to 20:54 never held 10 min above the wake line, so sleep stayed flagged.
+            // Midway between the lines (about 70 bpm for him): couch HR clears it, a nap rarely holds 20 min there.
+            if sleepDetected && !isSleepWindow && avgHR > (sleepThreshold + wakeThreshold) / 2 {
+                daytimeAwakeMinutes += elapsed
+            } else {
+                daytimeAwakeMinutes = 0
+            }
             if moving {
                 sustainedMovementMinutes += elapsed
             } else if still {
@@ -158,8 +165,9 @@ extension HealthEngine {
         // above wakeThreshold+20 is unambiguously awake even at 2am. On Jul 14
         // HR sat at 100–112 for over an hour and the latched detector still
         // called it "light sleep" because deepSleepProtection blocked every wake.
-        let trulyAwakeFromSleep = sleepDetected && sustainedHighHRMinutes >= 10
-            && (!deepSleepProtection || avgHR > wakeThreshold + 20)
+        let daytimeAwake = sleepDetected && daytimeAwakeMinutes >= 20
+        let trulyAwakeFromSleep = (sleepDetected && sustainedHighHRMinutes >= 10
+            && (!deepSleepProtection || avgHR > wakeThreshold + 20)) || daytimeAwake
 
         // v98 — movement-confirmed wake. If sustained movement ≥5 min during morning
         // hours (5am-12pm) while sleepDetected, fire wake regardless of HR threshold.
@@ -177,7 +185,7 @@ extension HealthEngine {
                 newStage = .awake
                 sustainedLowHRMinutes = 0
                 sustainedMovementMinutes = 0  // consumed
-            } else if trulyAwakeFromSleep && avgHR > wakeThreshold {
+            } else if trulyAwakeFromSleep && (avgHR > wakeThreshold || daytimeAwake) {
                 newStage = .awake
                 sustainedLowHRMinutes = 0
             } else if moving && avgHR > sleepRHR * 1.2 {
@@ -283,6 +291,14 @@ extension HealthEngine {
                 } else {
                     self.wakeUpNotified = false
                 }
+            }
+
+            if justWokeUp && self.sleepDetected && (previousStage == .awake || self.wakeUpNotified) {
+                // Already read awake, or this wake was announced inside the cooldown: sleep still ends, the wake
+                // is just not announced twice. 10-25 01:03 HR 107, stage Awake, and the flag stayed true.
+                self.sleepDetected = false
+                self.sustainedLowHRMinutes = 0
+                self.daytimeAwakeMinutes = 0
             }
 
             if justWokeUp && previousStage != .awake && !self.wakeUpNotified {
@@ -829,10 +845,10 @@ extension HealthEngine {
             }
             print("[GapReplay] Wake-up detected at \(wakeTime) — sleep score computed")
         } else {
-            DispatchQueue.main.async {
-                self.sleepDetected = true
-            }
-            print("[GapReplay] Still sleeping at end of gap — waiting for live wake-up")
+            // A replay can end a night, never start one: live HR decides whether he is asleep now.
+            // 10-24 an awake 09:52-11:53 gap (HR 75-85, under the wake line) read as sleep and set the flag;
+            // 10-25 a chunk from 02:00 did the same at 13:49 and held the rest of the night on the strap.
+            print("[GapReplay] No wake in the gap — sleepDetected left to live HR")
         }
     }
 
