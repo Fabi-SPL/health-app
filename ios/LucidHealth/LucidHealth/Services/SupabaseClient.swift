@@ -510,16 +510,8 @@ class SupabaseClient {
             // v141 — hold a background-task assertion so a push started inside a brief
             // BLE wake window actually finishes instead of being cancelled when iOS
             // re-suspends the app mid-request (URLSession.shared tasks die on suspend).
-            var bgTask: UIBackgroundTaskIdentifier = .invalid
-            bgTask = await MainActor.run {
-                UIApplication.shared.beginBackgroundTask(withName: "lucid-push-reading")
-            }
-            defer {
-                let t = bgTask
-                if t != .invalid {
-                    Task { @MainActor in UIApplication.shared.endBackgroundTask(t) }
-                }
-            }
+            let bgTask = await MainActor.run { BackgroundAssertion("lucid-push-reading") }
+            defer { bgTask.end() }
 
             func send() async throws -> Int {
                 let url = URL(string: "\(baseURL)/rest/v1/realtime_health")!
@@ -1669,12 +1661,8 @@ class SupabaseClient {
     func pushBackfillBatch(records: [(timestamp: Date, hr: UInt8, rrIntervals: [UInt16], hrv: Double)]) async -> (uploaded: Int, failed: Int) {
         guard !records.isEmpty else { return (0, 0) }
         // 10-25 12:26 he locked the phone mid-upload, iOS suspended the app and all 1061 rows failed.
-        var bgTask: UIBackgroundTaskIdentifier = .invalid
-        bgTask = await MainActor.run { UIApplication.shared.beginBackgroundTask(withName: "lucid-backfill-upload") }
-        defer {
-            let t = bgTask
-            if t != .invalid { Task { @MainActor in UIApplication.shared.endBackgroundTask(t) } }
-        }
+        let bgTask = await MainActor.run { BackgroundAssertion("lucid-backfill-upload") }
+        defer { bgTask.end() }
         do {
             try await ensureAuth()
             guard accessToken != nil else { return (0, records.count) }
@@ -4684,5 +4672,28 @@ extension SupabaseClient {
         let date: Date
         let kg: Double
         var id: Date { date }
+    }
+}
+
+/// A background-task assertion that ends itself when iOS runs out of time. The old calls had no
+/// expiration handler, so a request still running at the deadline got the app killed: MetricKit
+/// counted 2 BackgroundTaskAssertionTimeout exits on 10-24, one of them the 01:34 death.
+final class BackgroundAssertion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var id: UIBackgroundTaskIdentifier = .invalid
+
+    @MainActor init(_ name: String) {
+        id = UIApplication.shared.beginBackgroundTask(withName: name) { [self] in end() }
+    }
+
+    /// Safe to call twice and from any thread; iOS calls it on the main thread at expiry.
+    func end() {
+        lock.lock(); let t = id; id = .invalid; lock.unlock()
+        guard t != .invalid else { return }
+        if Thread.isMainThread {
+            UIApplication.shared.endBackgroundTask(t)
+        } else {
+            DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(t) }
+        }
     }
 }
