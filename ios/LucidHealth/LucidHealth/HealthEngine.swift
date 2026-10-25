@@ -262,6 +262,8 @@ class HealthEngine: ObservableObject {
     private var wristOffTime: Date?
     var sustainedLowHRMinutes: Double = 0
     var sustainedHighHRMinutes: Double = 0
+    // Daytime minutes above the sleep line while sleep is flagged; 20 of them end a stuck sleep flag.
+    var daytimeAwakeMinutes: Double = 0
     // v98 — tracks consecutive minutes of detected body movement. Used by
     // the movement-confirmed wake path: if sustained for ≥5 min during morning
     // hours while sleepDetected, fire wake regardless of HR threshold. Fixes

@@ -510,16 +510,8 @@ class SupabaseClient {
             // v141 — hold a background-task assertion so a push started inside a brief
             // BLE wake window actually finishes instead of being cancelled when iOS
             // re-suspends the app mid-request (URLSession.shared tasks die on suspend).
-            var bgTask: UIBackgroundTaskIdentifier = .invalid
-            bgTask = await MainActor.run {
-                UIApplication.shared.beginBackgroundTask(withName: "lucid-push-reading")
-            }
-            defer {
-                let t = bgTask
-                if t != .invalid {
-                    Task { @MainActor in UIApplication.shared.endBackgroundTask(t) }
-                }
-            }
+            let bgTask = await MainActor.run { BackgroundAssertion("lucid-push-reading") }
+            defer { bgTask.end() }
 
             func send() async throws -> Int {
                 let url = URL(string: "\(baseURL)/rest/v1/realtime_health")!
@@ -1668,6 +1660,9 @@ class SupabaseClient {
     /// Returns (uploaded, failed) counts.
     func pushBackfillBatch(records: [(timestamp: Date, hr: UInt8, rrIntervals: [UInt16], hrv: Double)]) async -> (uploaded: Int, failed: Int) {
         guard !records.isEmpty else { return (0, 0) }
+        // 10-25 12:26 he locked the phone mid-upload, iOS suspended the app and all 1061 rows failed.
+        let bgTask = await MainActor.run { BackgroundAssertion("lucid-backfill-upload") }
+        defer { bgTask.end() }
         do {
             try await ensureAuth()
             guard accessToken != nil else { return (0, records.count) }
@@ -1677,7 +1672,7 @@ class SupabaseClient {
 
             var uploaded = 0
             var failed = 0
-            let chunkSize = 50
+            let chunkSize = 250
 
             for chunkStart in stride(from: 0, to: records.count, by: chunkSize) {
                 try await ensureAuth()
@@ -1707,12 +1702,24 @@ class SupabaseClient {
                 req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 req.httpBody = try JSONSerialization.data(withJSONObject: rows)
 
-                let (data, resp) = try await session.data(for: req)
-                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-                if code < 300 {
+                // A dropped connection (10-25 12:26, -1005) used to fail the whole upload on the first part.
+                var code = 0
+                var errBody = ""
+                for attempt in 0..<3 {
+                    do {
+                        let (data, resp) = try await session.data(for: req)
+                        code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                        errBody = code < 300 ? "" : (String(data: data, encoding: .utf8) ?? "?")
+                    } catch {
+                        code = 0
+                        errBody = error.localizedDescription
+                    }
+                    if code > 0 && code < 500 { break }
+                    if attempt < 2 { try? await Task.sleep(nanoseconds: 2_000_000_000) }
+                }
+                if code > 0 && code < 300 {
                     uploaded += chunk.count
                 } else {
-                    let errBody = String(data: data, encoding: .utf8) ?? "?"
                     log("Backfill chunk FAILED HTTP \(code): \(errBody.prefix(120))")
                     failed += chunk.count
                 }
@@ -2830,7 +2837,7 @@ class SupabaseClient {
 
     /// Push a batch of debug log lines to a dedicated table for remote debugging.
     /// Uses knowledge_entries with category "device_log" so we can query by device/session.
-    func pushAppLog(lines: [String], sessionId: String) {
+    func pushAppLog(lines: [String], sessionId: String, onFailure: (([String]) -> Void)? = nil) {
         guard !lines.isEmpty else { return }
         Task {
             do {
@@ -2877,9 +2884,11 @@ class SupabaseClient {
                 if statusCode >= 300 {
                     let respBody = String(data: data, encoding: .utf8) ?? ""
                     print("[SB] App log push FAILED: HTTP \(statusCode) — \(respBody.prefix(200))")
+                    if statusCode >= 500 || statusCode == 401 { onFailure?(lines) }
                 }
             } catch {
                 print("[SB] App log push error: \(error.localizedDescription)")
+                onFailure?(lines)
             }
         }
     }
@@ -4663,5 +4672,28 @@ extension SupabaseClient {
         let date: Date
         let kg: Double
         var id: Date { date }
+    }
+}
+
+/// A background-task assertion that ends itself when iOS runs out of time. The old calls had no
+/// expiration handler, so a request still running at the deadline got the app killed: MetricKit
+/// counted 2 BackgroundTaskAssertionTimeout exits on 10-24, one of them the 01:34 death.
+final class BackgroundAssertion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var id: UIBackgroundTaskIdentifier = .invalid
+
+    @MainActor init(_ name: String) {
+        id = UIApplication.shared.beginBackgroundTask(withName: name) { [self] in end() }
+    }
+
+    /// Safe to call twice and from any thread; iOS calls it on the main thread at expiry.
+    func end() {
+        lock.lock(); let t = id; id = .invalid; lock.unlock()
+        guard t != .invalid else { return }
+        if Thread.isMainThread {
+            UIApplication.shared.endBackgroundTask(t)
+        } else {
+            DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(t) }
+        }
     }
 }

@@ -221,6 +221,8 @@ struct BoardNight {
 
     var hours: Double? {
         if let h = positive("sleep_hours") { return h }
+        // A gap night's window is only the part that was recorded, never a duration to show.
+        if isTechnicalGap { return nil }
         if let s = start, let e = end, e > s { return e.timeIntervalSince(s) / 3600 }
         return nil
     }
@@ -288,14 +290,16 @@ struct StageSegment: Identifiable {
 final class BoardStore: ObservableObject {
     static let shared = BoardStore()
 
-    @Published var scores: [String: Double]?
+    @Published var scores: [String: Double]? = BoardStore.cachedScores()
     @Published var metrics: [DailyMetric] = []
     @Published var stages: [StageSegment] = []
     @Published var meals: [FoodEntry] = []
     @Published var mealsFailed = false
     @Published var loadedOnce = false
-    private var loading = false
+    private var inflight: Task<Void, Never>?
     private var lastLoad: Date?
+    private var scoresDay: String? = UserDefaults.standard.string(forKey: BoardStore.cacheDayKey)
+    private var stagesStart: Date?
 
     var night: BoardNight { BoardNight(scores: scores) }
 
@@ -308,28 +312,82 @@ final class BoardStore: ObservableObject {
         Array(metrics.filter { $0.recovery != nil }.sorted { $0.date < $1.date }.suffix(n))
     }
 
+    /// One load at a time, run outside the caller's task: a view's .task is cancelled when the app comes back
+    /// (10-24 10:50: five RPCs "cancelled" in one second), and a cancelled load used to blank the board.
     func refresh(force: Bool = false) async {
-        if loading { return }
+        markStaleIfDayChanged()
+        if let t = inflight { await t.value; return }
         if !force, let l = lastLoad, Date().timeIntervalSince(l) < 120 { return }
-        loading = true
+        let t = Task { @MainActor in await self.load() }
+        inflight = t
+        await t.value
+        inflight = nil
+    }
+
+    /// A failed fetch keeps the last good numbers on screen and retries; only a good one replaces them.
+    private func load() async {
         let client = SupabaseClient.shared
-        let s = await client.fetchLastScores()
-        let m = await client.fetchDailyMetrics(days: 14)
-        scores = s
-        metrics = m
-        let n = BoardNight(scores: s)
+        var gotScores = false, gotMetrics = false
+        for attempt in 0..<3 {
+            if attempt > 0 { try? await Task.sleep(for: .seconds(attempt == 1 ? 2 : 6)) }
+            if !gotScores {
+                let s = await client.fetchLastScores()
+                if !s.isEmpty { scores = s; Self.cache(s); scoresDay = Self.berlinDay(); gotScores = true }
+            }
+            if !gotMetrics {
+                let m = await client.fetchDailyMetrics(days: 14)
+                if !m.isEmpty { metrics = m; gotMetrics = true }
+            }
+            if gotScores && gotMetrics { break }
+        }
+        let n = BoardNight(scores: scores)
         if let a = n.start, let b = n.end, b > a {
-            stages = StageSegment.build(from: await client.fetchSleepStages(start: a, end: b))
+            let raw = await client.fetchSleepStages(start: a, end: b)
+            // Another night's stages never sit under this night's times; a failed fetch keeps this night's.
+            if !raw.isEmpty || stagesStart != a { stages = StageSegment.build(from: raw); stagesStart = a }
+        } else {
+            stages = []
+            stagesStart = nil
         }
         do {
             meals = try await client.fetchRecentFoodEntries(limit: 30)
             mealsFailed = false
         } catch {
-            mealsFailed = true
+            mealsFailed = meals.isEmpty
         }
-        lastLoad = Date()
+        if gotScores && gotMetrics { lastLoad = Date() }
         loadedOnce = true
-        loading = false
+    }
+
+    /// The app lives for days over BLE, so yesterday's row stops reading as last night once the Berlin day
+    /// turns, even when every fetch that morning fails.
+    private func markStaleIfDayChanged() {
+        guard var s = scores, s["is_fallback"] == nil, scoresDay != Self.berlinDay() else { return }
+        s["is_fallback"] = 1
+        scores = s
+    }
+
+    private static let cacheKey = "lucid_board_scores_cache"
+    private static let cacheDayKey = "lucid_board_scores_cache_day"
+
+    private static func berlinDay(_ d: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = TimeZone(identifier: "Europe/Berlin")
+        return f.string(from: d)
+    }
+
+    private static func cache(_ s: [String: Double]) {
+        UserDefaults.standard.set(s, forKey: cacheKey)
+        UserDefaults.standard.set(berlinDay(), forKey: cacheDayKey)
+    }
+
+    /// Last good scores for the first frame after a cold launch. Another day's copy is marked as a fallback,
+    /// so it can feed baselines but is never painted on as today's night.
+    private static func cachedScores() -> [String: Double]? {
+        guard var s = UserDefaults.standard.dictionary(forKey: cacheKey) as? [String: Double], !s.isEmpty else { return nil }
+        if UserDefaults.standard.string(forKey: cacheDayKey) != berlinDay() { s["is_fallback"] = 1 }
+        return s
     }
 }
 

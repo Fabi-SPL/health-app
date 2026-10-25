@@ -94,6 +94,13 @@ extension TodayV3Screen {
         return f.string(from: now)
     }
 
+    /// Why a night number is missing: the night itself had no data, the app is still loading, or the fetch failed.
+    /// 10-25 a tracking-error night read "Not synced", as if the app had broken.
+    var nightEmptyWord: String {
+        if store.night.isTechnicalGap { return "No data" }
+        return store.loadedOnce ? "Not synced" : "Loading"
+    }
+
     var freshNight: BoardNight? {
         let n = store.night
         if n.loaded && !n.isFallback { return n }
@@ -147,9 +154,15 @@ extension TodayV3Screen {
         return freshNight?.positive("sleep_score")
     }
 
+    /// The server owns last night. The phone's own estimate shows only while it is tracking a night live:
+    /// 10-25 it kept a 19:00-22:12 couch block as "3 h" after the server had marked the night a tracking error.
+    /// engine.sleepDurationHours only ever holds a server value, so a night in progress counts from its own start.
     var sleepHoursValue: Double? {
-        if engine.sleepDurationHours > 0 { return engine.sleepDurationHours }
-        return freshNight?.hours
+        if engine.sleepDetected, let s = engine.sleepStartTime, now > s, now.timeIntervalSince(s) < 14 * 3600 {
+            return now.timeIntervalSince(s) / 3600
+        }
+        guard let n = freshNight, !n.isTechnicalGap else { return nil }
+        return n.hours
     }
 
     var strainFresh: Double? {
@@ -378,7 +391,7 @@ extension TodayV3Screen {
             V3SmallRing(value: zero(s), progress: min(s / 100, 1), color: V3.sleep, label: "Sleep",
                         sub: sleepHoursValue.map { V3Format.duration(hours: $0) } ?? todayV3Dash)
         } else {
-            V3SmallRing(value: todayV3Dash, progress: 0, color: V3.sleep, label: "Sleep", sub: "Not synced", dashed: true)
+            V3SmallRing(value: todayV3Dash, progress: 0, color: V3.sleep, label: "Sleep", sub: nightEmptyWord, dashed: true)
         }
     }
 
@@ -390,7 +403,7 @@ extension TodayV3Screen {
                 .contentShape(Rectangle())
                 .onTapGesture { sheet = .recovery }
         } else {
-            V3HeroRing(value: todayV3Dash, unit: "", progress: 0, color: V3.t3, label: "Recovery", sub: "Not synced")
+            V3HeroRing(value: todayV3Dash, unit: "", progress: 0, color: V3.t3, label: "Recovery", sub: nightEmptyWord)
         }
     }
 
@@ -432,15 +445,27 @@ extension TodayV3Screen {
         }
     }
 
+    /// Same rule as sleepHoursValue: the server's night, the phone's own only while it tracks one live.
+    /// 10-25 the clock drew the 19:00 couch block as last night.
+    var clockSleep: (start: Date?, end: Date?) {
+        if engine.sleepDetected, engine.sleepStartTime != nil { return (engine.sleepStartTime, engine.sleepEndTime) }
+        if let n = freshNight {
+            if n.isTechnicalGap { return (nil, nil) }
+            if let s = n.start, let e = n.end, e > s { return (s, e) }
+        }
+        return (nil, nil)
+    }
+
     var clockHero: some View {
         TodayV3ClockHero(
             now: now,
             recovery: recovery,
-            sleepStart: engine.sleepStartTime ?? freshNight?.start,
-            sleepEnd: engine.sleepEndTime ?? freshNight?.end,
+            sleepStart: clockSleep.start,
+            sleepEnd: clockSleep.end,
             meals: todaysMeals.map { $0.capturedAt },
             tonightBed: tonightBedMinutes,
-            tonightWake: tonight.map { $0.windowEndMinutes }
+            tonightWake: tonight.map { $0.windowEndMinutes },
+            emptyWord: nightEmptyWord
         )
     }
 
@@ -1570,6 +1595,7 @@ private struct TodayV3ClockHero: View {
     let meals: [Date]
     let tonightBed: Int?
     let tonightWake: Int?
+    var emptyWord: String = "Not synced"
 
     private let size: CGFloat = 300
     private let radius: CGFloat = 128
@@ -1682,7 +1708,7 @@ private struct TodayV3ClockHero: View {
                 Text(todayV3Dash)
                     .font(V3Font.num(64, .bold))
                     .foregroundStyle(V3.t3)
-                Text("Not synced")
+                Text(emptyWord)
                     .font(V3Font.text(13, .semibold))
                     .foregroundStyle(V3.t2)
                     .padding(.top, 4)
