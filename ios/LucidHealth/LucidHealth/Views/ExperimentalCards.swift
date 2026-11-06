@@ -29,6 +29,8 @@ struct BroadcastCard: View {
     // High-frequency cadence (1s vs 10s push interval)
     @State private var hfbEnabled = false
     @State private var hfbLoaded = false
+    // v235 — set by BLEManager's desktop-bridge poll, read-only here.
+    @AppStorage(BLEManager.hfbAutoLiveKey) private var hfbAutoLive = false
 
     private let svc = ExperimentalFeaturesService.shared
 
@@ -73,6 +75,9 @@ struct BroadcastCard: View {
                     cadenceButton("10s · normal", active: !hfbEnabled) { setHFB(false) }
                     cadenceButton("1s · high drain", active: hfbEnabled) { setHFB(true) }
                 }
+                Text(hfbAutoLive ? "Auto · 1s now, your PC is broadcasting" : "Auto · 1s while your PC is broadcasting")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(hfbAutoLive ? DS.Colors.teal : DS.Colors.textMuted)
             }
 
             // Expand for webhook config
@@ -270,8 +275,12 @@ struct BroadcastCard: View {
         }
     }
 
-    // MARK: HFB cadence I/O (mirrors the old High Frequency Broadcast card
-    // exactly — UserDefaults mirror + BLEManager retune notification).
+    // MARK: HFB cadence (phone-only since v235)
+    // The buttons used to write vrc_settings.enabled, which is also the desktop
+    // bridge's kill switch, so "10s · normal" paused the PC broadcaster. Cadence
+    // is now a local choice; the desktop lease (hfbAutoLiveKey) adds 1s on its own.
+
+    private static let hfbDecoupledKey = "lucid_hfb_cadence_local_v235"
 
     private func setHFB(_ on: Bool) {
         guard hfbEnabled != on else { return }
@@ -279,53 +288,20 @@ struct BroadcastCard: View {
         UserDefaults.standard.set(on, forKey: BLEManager.hfbBroadcastEnabledKey)
         NotificationCenter.default.post(name: .lucidHFBToggleChanged, object: nil)
         if on { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-        Task { await saveHFB() }
     }
 
     private func loadHFB() async {
-        if let s = await svc.fetchHFBSettings() {
-            await MainActor.run {
-                hfbEnabled = s.enabled
-                hfbLoaded = true
-                // Sync UserDefaults mirror + notify BLEManager so pushInterval
-                // matches the persisted Supabase state on every app launch.
-                UserDefaults.standard.set(s.enabled, forKey: BLEManager.hfbBroadcastEnabledKey)
-                NotificationCenter.default.post(name: .lucidHFBToggleChanged, object: nil)
-            }
-        } else {
-            hfbLoaded = true
+        let d = UserDefaults.standard
+        if !d.bool(forKey: Self.hfbDecoupledKey) {
+            // The old flag only mirrored the server's enabled column; start from 10s once.
+            d.set(false, forKey: BLEManager.hfbBroadcastEnabledKey)
+            d.set(true, forKey: Self.hfbDecoupledKey)
+            NotificationCenter.default.post(name: .lucidHFBToggleChanged, object: nil)
         }
-    }
-
-    private func saveHFB() async {
-        guard hfbLoaded else { return }
-        // Fetch existing settings to preserve fields the broadcaster's UI owns
-        // (mode, vibe_style, privacy_mode, etc.). We only mutate enabled.
-        if var s = await svc.fetchHFBSettings() {
-            s.enabled = hfbEnabled
-            _ = await svc.upsertHFBSettings(s)
-        } else {
-            // First-run: write a sensible default record with just enabled
-            let fresh = ExperimentalFeaturesService.HFBSettings(
-                enabled: hfbEnabled,
-                osc_host: "127.0.0.1", osc_port: 9000, refresh_seconds: 1.0,
-                mode: "vibe",
-                show_hr: true, show_hrv: true, show_baevsky: false,
-                show_strain: false, show_state: false,
-                show_recovery: false, show_body_battery: false,
-                show_skin_temp: false, show_coherence: false,
-                show_streak: false, show_spiral_count: false,
-                show_label: true,
-                custom_template: nil, custom_label: nil,
-                rotate_seconds: 8,
-                push_count: nil, last_message: nil,
-                privacy_mode: true, vibe_style: "heart",
-                show_vibe_duration: true,
-                show_energy_bar: false, show_drunk_bar: false,
-                drunk_only_when_tagged: true,
-                energy_bar_chars: 10, drunk_bar_chars: 10
-            )
-            _ = await svc.upsertHFBSettings(fresh)
+        let on = d.bool(forKey: BLEManager.hfbBroadcastEnabledKey)
+        await MainActor.run {
+            hfbEnabled = on
+            hfbLoaded = true
         }
     }
 }

@@ -450,9 +450,14 @@ class BLEManager: NSObject, ObservableObject {
     /// and .load() — BLEManager re-reads on every timer rebuild, triggered by
     /// .lucidHFBToggleChanged notification.
     static let hfbBroadcastEnabledKey = "lucid_hfb_broadcast_enabled"
+    /// v235 — written by pollHFBAutoLiveIfDue(): the desktop bridge is live, so 1s even with the manual flag off.
+    static let hfbAutoLiveKey = "lucid_hfb_auto_live"
     private var pushInterval: TimeInterval {
-        UserDefaults.standard.bool(forKey: Self.hfbBroadcastEnabledKey) ? 1.0 : 10.0
+        let d = UserDefaults.standard
+        return (d.bool(forKey: Self.hfbBroadcastEnabledKey) || d.bool(forKey: Self.hfbAutoLiveKey)) ? 1.0 : 10.0
     }
+    // v235 — only touched on bleQueue (flush site), so no lock needed.
+    private var lastAutoLivePoll: Date = .distantPast
     private var pendingReadings: [HRReading] = []
     // v141 — gates the opportunistic drain on the BLE wake path. Only ever
     // touched on bleQueue (append site + flush site), so no lock needed.
@@ -2623,6 +2628,30 @@ class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// v235 — every 30s while readings flow, ask whether the desktop bridge is live and retune the
+    /// cadence when the effective interval changes. Rides the flush (timer AND BLE wake path) because
+    /// the main-runloop timer is frozen on a backgrounded phone. MUST be called on bleQueue.
+    private func pollHFBAutoLiveIfDue() {
+        guard Date().timeIntervalSince(lastAutoLivePoll) >= 30 else { return }
+        lastAutoLivePoll = Date()
+        Task { [weak self] in
+            guard let live = await ExperimentalFeaturesService.shared.fetchHFBDesktopLive() else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let d = UserDefaults.standard
+                guard d.bool(forKey: Self.hfbAutoLiveKey) != live else { return }
+                let before = self.pushInterval
+                d.set(live, forKey: Self.hfbAutoLiveKey)
+                guard self.pushInterval != before else { return }
+                self.log("HFB auto: desktop bridge \(live ? "live" : "gone") → pushInterval \(self.pushInterval)s")
+                // Same restart as the toggle observer, but skip a timer a disconnect already killed.
+                if self.pushTimer?.isValid == true {
+                    self.startPushTimer()
+                }
+            }
+        }
+    }
+
     private var deviceInfoUploaded = false
 
     private func uploadDeviceInfo() {
@@ -2647,6 +2676,7 @@ class BLEManager: NSObject, ObservableObject {
     /// MUST be called on bleQueue. Snapshot pendingReadings, clear, and push.
     private func flushReadingsOnQueue() {
         guard !pendingReadings.isEmpty else { return }
+        pollHFBAutoLiveIfDue()
         lastFlush = Date()
         let batch = pendingReadings
         pendingReadings.removeAll()

@@ -248,6 +248,30 @@ final class ExperimentalFeaturesService {
         } catch { return false }
     }
 
+    /// v235 — the desktop bridge stamps pc_live_until while it runs. true = that stamp is
+    /// still in the future, false = NULL/past/no row, nil = couldn't ask (caller keeps its last value).
+    func fetchHFBDesktopLive() async -> Bool? {
+        do { try await ensureAuth() } catch { return nil }
+        guard let token = accessToken else { return nil }
+        let urlStr = "\(baseURL)/rest/v1/vrc_settings?user_id=eq.\(userId)&select=enabled,pc_live_until"
+        guard let url = URL(string: urlStr) else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 10
+        req.setValue(anonKey, forHTTPHeaderField: "apikey")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        struct Row: Decodable { let pc_live_until: String? }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard ((response as? HTTPURLResponse)?.statusCode ?? 0) < 300,
+                  let rows = try? JSONDecoder().decode([Row].self, from: data) else { return nil }
+            guard let iso = rows.first?.pc_live_until else { return false }
+            let withFrac = ISO8601DateFormatter()
+            withFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            guard let until = withFrac.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return false }
+            return until > Date()
+        } catch { return nil }
+    }
+
     // ════════════════════════════════════════════════════════════════
     // MARK: - Spiral alerts log
     // ════════════════════════════════════════════════════════════════
