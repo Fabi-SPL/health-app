@@ -217,7 +217,8 @@ BEGIN
       ELSIF v_A < 20 * v_stage - hyst THEN v_stage := least(4, floor((v_A + hyst) / 20))::int; END IF;
     END IF;
     IF public.night_of(r.bkt) = v_night THEN
-      IF v_asleep THEN v_slept := true; END IF;
+      -- only sleep that began this night (21:00-08:00) ends it; a lie-in past 08:00 belongs to the night before
+      IF v_asleep AND (v_h >= 21 OR v_h < ev_to) THEN v_slept := true; END IF;
       IF v_A > v_peak THEN v_peak := v_A; v_peak_at := r.bkt; END IF;
       IF v_first20 IS NULL AND v_A >= 20 THEN v_first20 := r.bkt; END IF;
     END IF;
