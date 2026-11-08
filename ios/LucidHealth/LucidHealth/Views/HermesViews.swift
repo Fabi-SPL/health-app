@@ -16,7 +16,7 @@ import SwiftUI
 
 // MARK: - Hermes API client + models
 
-private let hermesBaseURL = "https://app.lucid-ai.app"
+private let hermesBaseURL = "https://app.keled.de"
 
 private struct HermesNowSnapshot: Codable {
     let interpretation: String?
